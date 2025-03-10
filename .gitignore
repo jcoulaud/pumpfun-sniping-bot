@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+
+# Wallet files
+wallets/
+
+# Logs
+*.log
+
+# OS specific files
+.DS_Store
+
+# Editor directories
+.vscode/ 
+
+# Temporary files
+temp/
+temp/*

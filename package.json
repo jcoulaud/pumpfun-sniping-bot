@@ -1,0 +1,37 @@
+{
+  "name": "pumpfun-bot",
+  "version": "1.0.0",
+  "description": "Automated token creation and trading bot for Solana using PumpFun",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "lint": "eslint . --ext .ts"
+  },
+  "keywords": [
+    "solana",
+    "pumpfun",
+    "token",
+    "trading",
+    "bot"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@pinata/sdk": "^2.1.0",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.0",
+    "axios": "^1.6.7",
+    "bs58": "^5.0.0",
+    "dotenv": "^16.4.5",
+    "pinata": "^2.0.1",
+    "replicate": "^0.25.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.25",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.2"
+  }
+}
