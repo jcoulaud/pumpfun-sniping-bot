@@ -15,16 +15,6 @@ import { createWallet, getBalance, loadWallet, saveWallet, transferAllSol } from
 // Load environment variables
 dotenv.config();
 
-// Debug environment variables
-console.log('Environment variables loaded:');
-console.log('CLAUDE_API_KEY exists:', !!process.env.CLAUDE_API_KEY);
-console.log(
-  'CLAUDE_API_KEY length:',
-  process.env.CLAUDE_API_KEY ? process.env.CLAUDE_API_KEY.length : 0,
-);
-console.log('REPLICATE_API_TOKEN exists:', !!process.env.REPLICATE_API_TOKEN);
-console.log('HELIUS_API_KEY exists:', !!process.env.HELIUS_API_KEY);
-
 // Create wallet directory if it doesn't exist
 if (!fs.existsSync(WALLET_DIRECTORY)) {
   fs.mkdirSync(WALLET_DIRECTORY, { recursive: true });

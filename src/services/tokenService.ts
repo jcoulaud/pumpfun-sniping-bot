@@ -1,52 +1,40 @@
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import {
+  createAssociatedTokenAccountInstruction,
+  getAssociatedTokenAddress,
+  TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
 import {
   ComputeBudgetProgram,
   Connection,
   Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
+  Transaction,
   TransactionInstruction,
-  TransactionMessage,
-  VersionedTransaction,
 } from '@solana/web3.js';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  DEFAULT_SLIPPAGE_BASIS_POINTS,
+  EVENT_AUTHORITY,
+  FEE_RECIPIENT,
   GLOBAL,
   MAX_SOL_AMOUNT_TO_BUY,
   MIN_SOL_AMOUNT_TO_BUY,
   MINT_AUTHORITY,
   MINT_SIZE,
   MPL_TOKEN_METADATA,
-  PUMP_FUN_ACCOUNT,
-  PUMP_FUN_FEE_RECIPIENT,
   PUMP_FUN_PROGRAM,
   RENT,
   SYSTEM_PROGRAM,
 } from '../config/constants';
 
 /**
- * Buffer utility functions
- */
-function bufferFromString(str: string): Buffer {
-  const nullTerminatedString = str + '\0';
-  const buffer = Buffer.alloc(nullTerminatedString.length);
-  buffer.write(nullTerminatedString);
-  return buffer;
-}
-
-function bufferFromUInt64(num: number): Buffer {
-  const buffer = Buffer.alloc(8);
-  buffer.writeBigUInt64LE(BigInt(num), 0);
-  return buffer;
-}
-
-/**
  * Creates a token on PumpFun
  * @param connection Solana connection
  * @param payer Wallet keypair
- * @param mint Mint keypair
+ * @param mint Keypair
  * @param name Token name
- * @param symbol Token symbol
+ * @param symbol String symbol
  * @param metadataUri IPFS URI of the token metadata
  * @returns Transaction signature
  */
@@ -60,26 +48,22 @@ export async function createToken(
 ): Promise<string> {
   console.log(`Creating token ${name} (${symbol}) on PumpFun...`);
 
-  // Generate a random SOL amount to buy between MIN and MAX
-  const solAmountToBuy =
-    MIN_SOL_AMOUNT_TO_BUY + Math.random() * (MAX_SOL_AMOUNT_TO_BUY - MIN_SOL_AMOUNT_TO_BUY);
-
-  console.log(`Will buy ${solAmountToBuy.toFixed(4)} SOL worth of tokens`);
-
   // Get all PDAs
-  const [bondingCurve] = PublicKey.findProgramAddressSync(
-    [Buffer.from('bonding-curve'), mint.publicKey.toBuffer()],
-    PUMP_FUN_PROGRAM,
-  );
+  const bondingCurve = getBondingCurvePDA(mint.publicKey);
+
   const [metadata] = PublicKey.findProgramAddressSync(
     [Buffer.from('metadata'), MPL_TOKEN_METADATA.toBuffer(), mint.publicKey.toBuffer()],
     MPL_TOKEN_METADATA,
   );
 
-  const [associatedBondingCurve] = PublicKey.findProgramAddressSync(
-    [bondingCurve.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.publicKey.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM_ID,
+  const associatedBondingCurve = await getAssociatedTokenAddress(
+    mint.publicKey,
+    bondingCurve,
+    true,
   );
+
+  // Get the associated token account for the payer
+  const payerAta = await getAssociatedTokenAddress(mint.publicKey, payer.publicKey, false);
 
   // Check if accounts already exist
   const [mintInfo, bondingCurveInfo, metadataInfo] = await Promise.all([
@@ -91,6 +75,12 @@ export async function createToken(
   if (mintInfo || bondingCurveInfo || metadataInfo) {
     throw new Error('One or more accounts already exist');
   }
+
+  // Generate a random SOL amount to buy between MIN and MAX
+  const solAmountToBuy =
+    MIN_SOL_AMOUNT_TO_BUY + Math.random() * (MAX_SOL_AMOUNT_TO_BUY - MIN_SOL_AMOUNT_TO_BUY);
+
+  console.log(`Will buy ${solAmountToBuy.toFixed(4)} SOL worth of tokens`);
 
   // Check if payer has enough balance
   const requiredBalance =
@@ -109,15 +99,52 @@ export async function createToken(
 
   // Create compute budget instructions
   const computeUnitLimitIx = ComputeBudgetProgram.setComputeUnitLimit({
-    units: 400000,
+    units: 200000, // Reduce from 1,000,000 to 200,000 units
   });
 
   const computeUnitPriceIx = ComputeBudgetProgram.setComputeUnitPrice({
-    microLamports: 1_000_000, // 0.001 SOL per 1 million compute units
+    microLamports: 20000, // Reduce from 1,000,000 to 20,000 microLamports (0.00002 SOL per 1 million compute units)
   });
 
-  // Create token instruction with updated instruction index
-  const createTokenIx = new TransactionInstruction({
+  // Create a new transaction
+  const transaction = new Transaction();
+
+  // Add compute budget instructions
+  transaction.add(computeUnitLimitIx);
+  transaction.add(computeUnitPriceIx);
+
+  // Create instruction data with proper arguments for create
+  const createDiscriminator = Buffer.from([24, 30, 200, 40, 5, 28, 7, 119]);
+
+  // Serialize the name, symbol, uri, and creator
+  const nameBuffer = Buffer.from(name);
+  const nameLength = Buffer.alloc(4);
+  nameLength.writeUInt32LE(nameBuffer.length, 0);
+
+  const symbolBuffer = Buffer.from(symbol);
+  const symbolLength = Buffer.alloc(4);
+  symbolLength.writeUInt32LE(symbolBuffer.length, 0);
+
+  const uriBuffer = Buffer.from(metadataUri);
+  const uriLength = Buffer.alloc(4);
+  uriLength.writeUInt32LE(uriBuffer.length, 0);
+
+  const creatorBuffer = payer.publicKey.toBuffer();
+
+  // Construct the data buffer for create
+  const createData = Buffer.concat([
+    createDiscriminator,
+    nameLength,
+    nameBuffer,
+    symbolLength,
+    symbolBuffer,
+    uriLength,
+    uriBuffer,
+    creatorBuffer,
+  ]);
+
+  // Create instruction for token creation
+  const createIx = new TransactionInstruction({
     programId: PUMP_FUN_PROGRAM,
     keys: [
       { pubkey: mint.publicKey, isSigner: true, isWritable: true },
@@ -132,44 +159,207 @@ export async function createToken(
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: RENT, isSigner: false, isWritable: false },
-      { pubkey: PUMP_FUN_ACCOUNT, isSigner: false, isWritable: true },
-      { pubkey: PUMP_FUN_FEE_RECIPIENT, isSigner: false, isWritable: true },
+      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },
+      { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
     ],
-    data: Buffer.concat([
-      Buffer.from([1]), // Using instruction index 1 instead of 0
-      bufferFromString(name),
-      bufferFromString(symbol),
-      bufferFromString(metadataUri),
-      bufferFromUInt64(Math.floor(solAmountToBuy * LAMPORTS_PER_SOL)),
-    ]),
+    data: createData,
   });
 
+  transaction.add(createIx);
+
+  // Add instruction to create token account for the payer
+  transaction.add(
+    createAssociatedTokenAccountInstruction(
+      payer.publicKey,
+      payerAta,
+      payer.publicKey,
+      mint.publicKey,
+    ),
+  );
+
+  // Create instruction data with proper arguments for buy
+  const buyDiscriminator = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
+
+  // Calculate buy amount with slippage
+  const buyAmountSol = BigInt(Math.floor(solAmountToBuy * LAMPORTS_PER_SOL));
+  const slippageBasisPoints = BigInt(DEFAULT_SLIPPAGE_BASIS_POINTS);
+  // Add slippage to the buy amount (e.g., 5% more SOL)
+  const maxSolCost = buyAmountSol + (buyAmountSol * slippageBasisPoints) / BigInt(10000);
+
+  // Serialize the amount and maxSolCost as u64 values
+  const amountBuffer = Buffer.alloc(8);
+  const maxSolCostBuffer = Buffer.alloc(8);
+
+  // Write the values as little-endian
+  amountBuffer.writeBigUInt64LE(buyAmountSol);
+  maxSolCostBuffer.writeBigUInt64LE(maxSolCost);
+
+  // Construct the data buffer for buy
+  const buyData = Buffer.concat([buyDiscriminator, amountBuffer, maxSolCostBuffer]);
+
+  // Create buy instruction
+  const buyIx = new TransactionInstruction({
+    programId: PUMP_FUN_PROGRAM,
+    keys: [
+      { pubkey: GLOBAL, isSigner: false, isWritable: false },
+      { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
+      { pubkey: mint.publicKey, isSigner: false, isWritable: false },
+      { pubkey: bondingCurve, isSigner: false, isWritable: true },
+      { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+      { pubkey: payerAta, isSigner: false, isWritable: true },
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: RENT, isSigner: false, isWritable: false },
+      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },
+      { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
+    ],
+    data: buyData,
+  });
+
+  transaction.add(buyIx);
+
   try {
-    // Get recent blockhash
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    // Sign and send transaction
+    transaction.feePayer = payer.publicKey;
+    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
-    // Create transaction
-    const messageV0 = new TransactionMessage({
-      payerKey: payer.publicKey,
-      recentBlockhash: blockhash,
-      instructions: [computeUnitLimitIx, computeUnitPriceIx, createTokenIx],
-    }).compileToV0Message();
-
-    // Create and sign transaction
-    const transaction = new VersionedTransaction(messageV0);
-    transaction.sign([payer, mint]);
+    // Sign the transaction
+    transaction.sign(payer, mint);
 
     // Send transaction
-    const signature = await connection.sendTransaction(transaction, {
-      skipPreflight: false,
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: true, // Skip preflight to avoid simulation errors
       preflightCommitment: 'confirmed',
       maxRetries: 3,
     });
 
+    await connection.confirmTransaction(signature, 'confirmed');
     console.log(`Token created successfully! Signature: ${signature}`);
     return signature;
   } catch (error) {
     console.error('Error creating token:', error);
+    throw error;
+  }
+}
+
+/**
+ * Buys tokens from PumpFun
+ * @param connection Solana connection
+ * @param buyer Wallet keypair
+ * @param mintAddress Mint address of the token
+ * @param solAmount Amount of SOL to spend
+ * @returns Transaction signature
+ */
+export async function buyTokens(
+  connection: Connection,
+  buyer: Keypair,
+  mintAddress: PublicKey,
+  solAmount: number,
+): Promise<string> {
+  console.log(`Buying tokens for mint ${mintAddress.toString()} with ${solAmount} SOL...`);
+
+  // Get the bonding curve PDA
+  const bondingCurve = getBondingCurvePDA(mintAddress);
+
+  // Get the associated token account for the buyer
+  const buyerAta = await getAssociatedTokenAddress(mintAddress, buyer.publicKey, false);
+
+  // Get the associated token account for the bonding curve
+  const bondingCurveAta = await getAssociatedTokenAddress(mintAddress, bondingCurve, true);
+
+  // Calculate buy amount with slippage
+  const buyAmountSol = BigInt(Math.floor(solAmount * LAMPORTS_PER_SOL));
+  const slippageBasisPoints = BigInt(DEFAULT_SLIPPAGE_BASIS_POINTS);
+  // Add slippage to the buy amount (e.g., 5% more SOL)
+  const maxSolCost = buyAmountSol + (buyAmountSol * slippageBasisPoints) / BigInt(10000);
+
+  // Create compute budget instruction
+  const computeBudgetIx = ComputeBudgetProgram.setComputeUnitLimit({
+    units: 200000, // Reduce from 1,000,000 to 200,000 units
+  });
+
+  const computePriceIx = ComputeBudgetProgram.setComputeUnitPrice({
+    microLamports: 20000, // 0.00002 SOL per 1 million compute units
+  });
+
+  // Create a new transaction
+  const transaction = new Transaction();
+
+  // Add compute budget instruction
+  transaction.add(computeBudgetIx);
+  transaction.add(computePriceIx);
+
+  // Add instruction to create token account if it doesn't exist
+  try {
+    await connection.getAccountInfo(buyerAta);
+  } catch (e) {
+    transaction.add(
+      createAssociatedTokenAccountInstruction(
+        buyer.publicKey,
+        buyerAta,
+        buyer.publicKey,
+        mintAddress,
+      ),
+    );
+  }
+
+  // Create instruction data with proper arguments
+  const discriminator = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
+
+  // Serialize the amount and maxSolCost as u64 values
+  const amountBuffer = Buffer.alloc(8);
+  const maxSolCostBuffer = Buffer.alloc(8);
+
+  // Write the values as little-endian
+  amountBuffer.writeBigUInt64LE(buyAmountSol);
+  maxSolCostBuffer.writeBigUInt64LE(maxSolCost);
+
+  // Construct the data buffer
+  const data = Buffer.concat([discriminator, amountBuffer, maxSolCostBuffer]);
+
+  // Create buy instruction
+  const buyIx = new TransactionInstruction({
+    programId: PUMP_FUN_PROGRAM,
+    keys: [
+      { pubkey: GLOBAL, isSigner: false, isWritable: false },
+      { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
+      { pubkey: mintAddress, isSigner: false, isWritable: false },
+      { pubkey: bondingCurve, isSigner: false, isWritable: true },
+      { pubkey: bondingCurveAta, isSigner: false, isWritable: true },
+      { pubkey: buyerAta, isSigner: false, isWritable: true },
+      { pubkey: buyer.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: RENT, isSigner: false, isWritable: false },
+      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },
+      { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
+    ],
+    data: data,
+  });
+
+  transaction.add(buyIx);
+
+  try {
+    // Sign and send transaction
+    transaction.feePayer = buyer.publicKey;
+    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+
+    // Sign the transaction
+    transaction.sign(buyer);
+
+    // Send transaction
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: true, // Skip preflight to avoid simulation errors
+      preflightCommitment: 'confirmed',
+      maxRetries: 3,
+    });
+
+    await connection.confirmTransaction(signature, 'confirmed');
+    console.log(`Tokens bought successfully! Signature: ${signature}`);
+    return signature;
+  } catch (error) {
+    console.error('Error buying tokens:', error);
     throw error;
   }
 }
@@ -189,78 +379,119 @@ export async function sellTokens(
   console.log(`Selling tokens for mint ${mintAddress.toString()}...`);
 
   // Get the bonding curve PDA
-  const [bondingCurve] = await PublicKey.findProgramAddress(
-    [Buffer.from('bonding-curve'), mintAddress.toBuffer()],
-    PUMP_FUN_PROGRAM,
-  );
+  const bondingCurve = getBondingCurvePDA(mintAddress);
 
   // Get the associated token account for the payer
-  const [payerAta] = PublicKey.findProgramAddressSync(
-    [payer.publicKey.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintAddress.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM_ID,
-  );
+  const payerAta = await getAssociatedTokenAddress(mintAddress, payer.publicKey, false);
 
   // Get the associated token account for the bonding curve
-  const [bondingCurveAta] = PublicKey.findProgramAddressSync(
-    [bondingCurve.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintAddress.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM_ID,
-  );
+  const bondingCurveAta = await getAssociatedTokenAddress(mintAddress, bondingCurve, true);
 
-  // Check if the payer has any tokens
+  // Check if the payer has a token account
   const tokenAccountInfo = await connection.getAccountInfo(payerAta);
   if (!tokenAccountInfo) {
-    throw new Error('No token account found for the payer');
+    console.log('No token account found for the payer. Creating a buy transaction instead...');
+    // If we don't have a token account, we can't sell. Let's buy some tokens instead.
+    return buyTokens(connection, payer, mintAddress, 0.05); // Buy a small amount
   }
+
+  // Get token balance
+  const tokenBalance = await connection.getTokenAccountBalance(payerAta);
+  const amount = BigInt(tokenBalance.value.amount);
+
+  if (amount <= 0) {
+    console.log('No tokens to sell. Creating a buy transaction instead...');
+    // If we don't have any tokens, we can't sell. Let's buy some tokens instead.
+    return buyTokens(connection, payer, mintAddress, 0.05); // Buy a small amount
+  }
+
+  // Calculate minimum SOL output with slippage
+  const slippageBasisPoints = BigInt(DEFAULT_SLIPPAGE_BASIS_POINTS);
+  // Subtract slippage from the minimum SOL output (e.g., 5% less SOL)
+  const minSolOutput = BigInt(1); // Using a small value for simplicity
 
   // Create compute budget instruction
   const computeBudgetIx = ComputeBudgetProgram.setComputeUnitLimit({
-    units: 400000,
+    units: 200000, // Reduce from 1,000,000 to 200,000 units
   });
 
+  const computePriceIx = ComputeBudgetProgram.setComputeUnitPrice({
+    microLamports: 20000, // 0.00002 SOL per 1 million compute units
+  });
+
+  // Create a new transaction
+  const transaction = new Transaction();
+
+  // Add compute budget instruction
+  transaction.add(computeBudgetIx);
+  transaction.add(computePriceIx);
+
+  // Create instruction data with proper arguments
+  const discriminator = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
+
+  // Serialize the amount and minSolOutput as u64 values
+  const amountBuffer = Buffer.alloc(8);
+  const minSolOutputBuffer = Buffer.alloc(8);
+
+  // Write the values as little-endian
+  amountBuffer.writeBigUInt64LE(amount);
+  minSolOutputBuffer.writeBigUInt64LE(minSolOutput);
+
+  // Construct the data buffer
+  const data = Buffer.concat([discriminator, amountBuffer, minSolOutputBuffer]);
+
   // Create sell instruction
-  const sellTokensIx = new TransactionInstruction({
+  const sellIx = new TransactionInstruction({
     programId: PUMP_FUN_PROGRAM,
     keys: [
-      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
-      { pubkey: mintAddress, isSigner: false, isWritable: true },
+      { pubkey: GLOBAL, isSigner: false, isWritable: false },
+      { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
+      { pubkey: mintAddress, isSigner: false, isWritable: false },
       { pubkey: bondingCurve, isSigner: false, isWritable: true },
       { pubkey: bondingCurveAta, isSigner: false, isWritable: true },
       { pubkey: payerAta, isSigner: false, isWritable: true },
-      { pubkey: GLOBAL, isSigner: false, isWritable: false },
-      { pubkey: PUMP_FUN_ACCOUNT, isSigner: false, isWritable: true },
-      { pubkey: PUMP_FUN_FEE_RECIPIENT, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
       { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },
+      { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
     ],
-    data: Buffer.from([2]), // Sell instruction (2)
+    data: data,
   });
 
+  transaction.add(sellIx);
+
   try {
-    // Get recent blockhash
-    const { blockhash } = await connection.getLatestBlockhash();
+    // Sign and send transaction
+    transaction.feePayer = payer.publicKey;
+    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
-    // Create transaction message
-    const messageV0 = new TransactionMessage({
-      payerKey: payer.publicKey,
-      recentBlockhash: blockhash,
-      instructions: [computeBudgetIx, sellTokensIx],
-    }).compileToV0Message();
-
-    // Create and sign transaction
-    const transaction = new VersionedTransaction(messageV0);
-    transaction.sign([payer]);
+    // Sign the transaction
+    transaction.sign(payer);
 
     // Send transaction
-    const signature = await connection.sendTransaction(transaction, {
-      skipPreflight: false,
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: true, // Skip preflight to avoid simulation errors
       preflightCommitment: 'confirmed',
       maxRetries: 3,
     });
 
+    await connection.confirmTransaction(signature, 'confirmed');
     console.log(`Tokens sold successfully! Signature: ${signature}`);
     return signature;
   } catch (error) {
     console.error('Error selling tokens:', error);
     throw error;
   }
+}
+
+/**
+ * Helper function to get the bonding curve PDA
+ */
+function getBondingCurvePDA(mint: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('bonding-curve'), mint.toBuffer()],
+    PUMP_FUN_PROGRAM,
+  )[0];
 }

@@ -126,40 +126,65 @@ Make sure the name and symbol are not offensive or too similar to existing major
 export async function generateTokenImage(tokenName: string, tokenSymbol: string): Promise<string> {
   console.log('Generating token image with Replicate API...');
 
-  const prompt = `Create a professional, high-quality logo for a cryptocurrency token called "${tokenName}" with the symbol "${tokenSymbol}". The logo should be modern, memorable, and suitable for a crypto token. Make it colorful and eye-catching with a clean background.`;
+  // Use a more neutral prompt to avoid NSFW detection
+  const prompt = `Create a simple, abstract logo for a cryptocurrency token called "${tokenName}" with the symbol "${tokenSymbol}". Use geometric shapes, clean lines, and a minimalist design. Avoid any controversial or suggestive imagery. Make it suitable for a professional financial application.`;
 
-  try {
-    // Using Stable Diffusion XL model for image generation
-    const output = await replicate.run(
-      'stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b',
-      {
-        input: {
-          prompt,
-          width: 512,
-          height: 512,
-          refine: 'expert_ensemble_refiner',
-          scheduler: 'K_EULER',
-          lora_scale: 0.6,
-          num_outputs: 1,
-          guidance_scale: 7.5,
-          apply_watermark: false,
-          high_noise_frac: 0.8,
-          negative_prompt: 'low quality, blurry, text, words, letters, signature, watermark',
-          prompt_strength: 0.8,
-          num_inference_steps: 25,
+  const maxRetries = 3;
+  let retryCount = 0;
+
+  while (retryCount < maxRetries) {
+    try {
+      // Using Stable Diffusion XL model for image generation
+      const output = await replicate.run(
+        'stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b',
+        {
+          input: {
+            prompt,
+            width: 512,
+            height: 512,
+            refine: 'expert_ensemble_refiner',
+            scheduler: 'K_EULER',
+            lora_scale: 0.6,
+            num_outputs: 1,
+            guidance_scale: 7.5,
+            apply_watermark: false,
+            high_noise_frac: 0.8,
+            negative_prompt:
+              'nsfw, offensive, explicit, sexual, text, words, letters, signature, watermark, low quality, blurry',
+            prompt_strength: 0.8,
+            num_inference_steps: 25,
+          },
         },
-      },
-    );
+      );
 
-    if (Array.isArray(output) && output.length > 0) {
-      return output[0] as string;
-    } else {
-      throw new Error('Failed to generate image with Replicate');
+      if (Array.isArray(output) && output.length > 0) {
+        return output[0] as string;
+      } else {
+        throw new Error('Failed to generate image with Replicate');
+      }
+    } catch (error) {
+      retryCount++;
+      console.log(
+        `Image generation attempt ${retryCount} failed. ${
+          maxRetries - retryCount
+        } attempts remaining.`,
+      );
+
+      if (retryCount >= maxRetries) {
+        console.log('All image generation attempts failed. Using default image URL.');
+        // Return a default image URL if all attempts fail
+        return (
+          'https://placehold.co/512x512/4287f5/ffffff?text=' + encodeURIComponent(`${tokenSymbol}`)
+        );
+      }
+
+      // Wait a bit before retrying
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-  } catch (error) {
-    console.error('Error generating token image:', error);
-    throw error;
   }
+
+  // This should never be reached due to the return in the catch block, but TypeScript needs it
+  return 'https://placehold.co/512x512/4287f5/ffffff?text=' + encodeURIComponent(`${tokenSymbol}`);
 }
 
 /**
@@ -193,12 +218,13 @@ export async function uploadToIPFS(
     // Upload the image to IPFS via Pinata
     const imageUploadResult = await pinata.upload.public.file(imageFile);
     const ipfsImageUrl = `ipfs://${imageUploadResult.cid}`;
+    const httpsImageUrl = `https://ipfs.io/ipfs/${imageUploadResult.cid}`;
     console.log(`Image uploaded to IPFS: ${ipfsImageUrl}`);
 
     // Create the complete metadata with the IPFS image URL
     const completeMetadata: TokenMetadata = {
       ...metadata,
-      image: ipfsImageUrl,
+      image: httpsImageUrl, // Use HTTPS URL instead of IPFS URL
       showName: true,
       createdOn: 'https://pump.fun',
     };
@@ -206,9 +232,10 @@ export async function uploadToIPFS(
     // Upload the metadata to IPFS via Pinata
     const metadataUploadResult = await pinata.upload.public.json(completeMetadata);
     const ipfsMetadataUrl = `ipfs://${metadataUploadResult.cid}`;
+    const httpsMetadataUrl = `https://ipfs.io/ipfs/${metadataUploadResult.cid}`;
     console.log(`Metadata uploaded to IPFS: ${ipfsMetadataUrl}`);
 
-    return ipfsMetadataUrl;
+    return httpsMetadataUrl; // Return HTTPS URL instead of IPFS URL
   } catch (error) {
     console.error('Error uploading to IPFS:', error);
     throw error;
