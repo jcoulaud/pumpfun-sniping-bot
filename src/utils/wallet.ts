@@ -7,9 +7,9 @@ import {
   Transaction,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
-import fs from 'fs';
-import path from 'path';
-import { WALLET_DIRECTORY } from '../config/constants';
+import fs from 'node:fs';
+import path from 'node:path';
+import { WALLET_DIRECTORY } from '../config/constants.js';
 
 /**
  * Creates a new Solana wallet (keypair)

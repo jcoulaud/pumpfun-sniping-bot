@@ -1,5 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-import { PUMP_FUN_PROGRAM } from '../config/constants';
+import { PUMP_FUN_PROGRAM } from '../config/constants.js';
+import logger from '../utils/logger.js';
 
 /**
  * Transaction type enum
@@ -33,7 +34,7 @@ export function monitorTokenTransactions(
   mintAddress: PublicKey,
   callback: (transaction: TransactionData) => void,
 ): () => void {
-  console.log(`Starting to monitor transactions for mint ${mintAddress.toString()}...`);
+  logger.info(`Starting to monitor transactions for mint ${logger.formatToken(mintAddress)}...`);
 
   // Subscribe to program account changes
   const subscriptionId = connection.onProgramAccountChange(
@@ -80,7 +81,7 @@ export function monitorTokenTransactions(
           timestamp: transaction.blockTime || Date.now() / 1000,
         });
       } catch (error) {
-        console.error('Error processing transaction:', error);
+        logger.error('Error processing transaction:', error);
       }
     },
     'confirmed',
@@ -88,7 +89,7 @@ export function monitorTokenTransactions(
 
   // Return a cleanup function
   return () => {
-    console.log('Stopping transaction monitoring...');
+    logger.info('Stopping transaction monitoring...');
     connection.removeProgramAccountChangeListener(subscriptionId);
   };
 }
@@ -105,8 +106,10 @@ export function monitorTokenTransactionsWebsocket(
   mintAddress: PublicKey,
   callback: (transaction: TransactionData) => void,
 ): () => void {
-  console.log(
-    `Starting to monitor transactions for mint ${mintAddress.toString()} using websocket...`,
+  logger.info(
+    `Starting to monitor transactions for mint ${logger.formatToken(
+      mintAddress,
+    )} using websocket...`,
   );
 
   // Subscribe to account changes
@@ -157,7 +160,7 @@ export function monitorTokenTransactionsWebsocket(
           timestamp: transaction.blockTime || Date.now() / 1000,
         });
       } catch (error) {
-        console.error('Error processing transaction:', error);
+        logger.error('Error processing transaction:', error);
       }
     },
     'confirmed',
@@ -165,7 +168,7 @@ export function monitorTokenTransactionsWebsocket(
 
   // Return a cleanup function
   return () => {
-    console.log('Stopping transaction monitoring...');
+    logger.info('Stopping transaction monitoring...');
     connection.removeAccountChangeListener(subscriptionId);
   };
 }
@@ -180,7 +183,7 @@ export async function setupHeliusWebhook(
   mintAddress: PublicKey,
   callbackUrl: string,
 ): Promise<string> {
-  console.log(`Setting up Helius webhook for mint ${mintAddress.toString()}...`);
+  logger.info(`Setting up Helius webhook for mint ${logger.formatToken(mintAddress)}...`);
 
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) {
@@ -215,7 +218,7 @@ export async function setupHeliusWebhook(
  * @param webhookId ID of the webhook to delete
  */
 export async function deleteHeliusWebhook(webhookId: string): Promise<void> {
-  console.log(`Deleting Helius webhook ${webhookId}...`);
+  logger.info(`Deleting Helius webhook ${webhookId}...`);
 
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) {

@@ -1,16 +1,26 @@
 import { clusterApiUrl, Connection, Keypair } from '@solana/web3.js';
 import dotenv from 'dotenv';
-import fs from 'fs';
-import path from 'path';
-import { MIN_SOL_AMOUNT_TO_BUY, SELL_TIMEOUT_MS, WALLET_DIRECTORY } from './config/constants';
+import fs from 'node:fs';
+import path from 'node:path';
+import { MIN_SOL_AMOUNT_TO_BUY, SELL_TIMEOUT_MS, WALLET_DIRECTORY } from './config/constants.js';
 import {
   generateTokenImage,
   generateTokenMetadata,
   uploadToIPFS,
-} from './services/metadataGenerator';
-import { createToken, sellTokens } from './services/tokenService';
-import { monitorTokenTransactionsWebsocket, TransactionType } from './services/transactionMonitor';
-import { createWallet, getBalance, loadWallet, saveWallet, transferAllSol } from './utils/wallet';
+} from './services/metadataGenerator.js';
+import { createToken, sellTokens } from './services/tokenService.js';
+import {
+  monitorTokenTransactionsWebsocket,
+  TransactionType,
+} from './services/transactionMonitor.js';
+import logger from './utils/logger.js';
+import {
+  createWallet,
+  getBalance,
+  loadWallet,
+  saveWallet,
+  transferAllSol,
+} from './utils/wallet.js';
 
 // Load environment variables
 dotenv.config();
@@ -33,13 +43,16 @@ const connection = new Connection(
  */
 async function main() {
   try {
-    console.log('Starting PumpFun Bot...');
+    // Start a new cycle
+    logger.startCycle();
+
+    logger.info('Starting PumpFun Bot...');
 
     // Create a new wallet for this run
     const wallet = createWallet();
     const walletPath = saveWallet(wallet);
-    console.log(`Created new wallet: ${wallet.publicKey.toString()}`);
-    console.log(`Wallet saved to: ${walletPath}`);
+    logger.info(`Created new wallet: ${logger.formatWallet(wallet.publicKey)}`);
+    logger.debug(`Wallet saved to: ${walletPath}`);
 
     // Check if there's a previous wallet to transfer funds from
     const previousWallets = fs
@@ -55,42 +68,42 @@ async function main() {
 
       // Load the most recent wallet
       const previousWallet = loadWallet(previousWallets[0]);
-      console.log(`Found previous wallet: ${previousWallet.publicKey.toString()}`);
+      logger.info(`Found previous wallet: ${logger.formatWallet(previousWallet.publicKey)}`);
 
       // Check if the previous wallet has enough SOL
       const balance = await getBalance(connection, previousWallet.publicKey);
       const minRequiredBalance = MIN_SOL_AMOUNT_TO_BUY + 0.005; // MIN_SOL_AMOUNT_TO_BUY plus a small amount for transaction fees
 
       if (balance >= minRequiredBalance) {
-        console.log(`Previous wallet has ${balance} SOL. Transferring to new wallet...`);
+        logger.info(`Previous wallet has ${balance} SOL. Transferring to new wallet...`);
 
         // Transfer all SOL from the previous wallet to the new one
         const signature = await transferAllSol(connection, previousWallet, wallet.publicKey);
 
-        console.log(`Transfer complete. Signature: ${signature}`);
+        logger.success(`Transfer complete. Signature: ${logger.formatTx(signature)}`);
 
         // Wait for the transfer to be confirmed
         await connection.confirmTransaction(signature);
       } else {
-        console.log(
+        logger.warning(
           `Previous wallet has insufficient balance (${balance} SOL). Minimum required: ${minRequiredBalance} SOL. Skipping transfer.`,
         );
-        console.log('Please fund the wallet manually before continuing.');
+        logger.warning('Please fund the wallet manually before continuing.');
         return; // Exit the program since we need funds to continue
       }
     } else {
-      console.log('No previous wallet found. Please fund the new wallet manually.');
-      console.log(`Wallet address: ${wallet.publicKey.toString()}`);
+      logger.warning('No previous wallet found. Please fund the new wallet manually.');
+      logger.info(`Wallet address: ${logger.formatWallet(wallet.publicKey)}`);
       return; // Exit the program since we need funds to continue
     }
 
     // Generate token metadata
     const metadata = await generateTokenMetadata();
-    console.log('Generated token metadata:', metadata);
+    logger.info('Generated token metadata:', metadata);
 
     // Generate token image
     const imageUrl = await generateTokenImage(metadata.name, metadata.symbol);
-    console.log('Generated token image:', imageUrl);
+    logger.info('Generated token image:', imageUrl);
 
     // Upload metadata and image to IPFS
     const metadataUri = await uploadToIPFS(
@@ -101,11 +114,11 @@ async function main() {
       },
       imageUrl,
     );
-    console.log('Uploaded to IPFS:', metadataUri);
+    logger.info('Uploaded to IPFS:', metadataUri);
 
     // Create a new mint keypair
     const mint = Keypair.generate();
-    console.log(`Created new mint: ${mint.publicKey.toString()}`);
+    logger.info(`Created new mint: ${logger.formatToken(mint.publicKey)}`);
 
     // Create the token on PumpFun
     const createSignature = await createToken(
@@ -117,7 +130,7 @@ async function main() {
       metadataUri,
     );
 
-    console.log(`Token created successfully! Signature: ${createSignature}`);
+    logger.success(`Token created successfully! Signature: ${logger.formatTx(createSignature)}`);
 
     // Set up a flag to track if someone has bought the token
     let someoneBought = false;
@@ -125,17 +138,20 @@ async function main() {
     // Set up a timer to sell tokens after the timeout
     const sellTimer = setTimeout(async () => {
       if (!someoneBought) {
-        console.log(
+        logger.cycle(
           `No one bought the token within ${SELL_TIMEOUT_MS / 1000} seconds. Selling all tokens...`,
         );
         try {
           const sellSignature = await sellTokens(connection, wallet, mint.publicKey);
-          console.log(`Tokens sold successfully! Signature: ${sellSignature}`);
+          logger.success(`Tokens sold successfully! Signature: ${logger.formatTx(sellSignature)}`);
+
+          // End the current cycle
+          logger.endCycle();
 
           // Start the process again with a new wallet
           setTimeout(main, 5000);
         } catch (error) {
-          console.error('Error selling tokens:', error);
+          logger.error('Error selling tokens:', error);
         }
       }
     }, SELL_TIMEOUT_MS);
@@ -145,7 +161,7 @@ async function main() {
       connection,
       mint.publicKey,
       async (transaction) => {
-        console.log('Transaction detected:', transaction);
+        logger.debug('Transaction detected:', transaction);
 
         // If someone bought the token and it's not our own transaction
         if (
@@ -153,7 +169,7 @@ async function main() {
           transaction.buyer &&
           !transaction.buyer.equals(wallet.publicKey)
         ) {
-          console.log('Someone bought the token! Selling all tokens...');
+          logger.success('Someone bought the token! Selling all tokens...');
           someoneBought = true;
 
           // Clear the sell timer
@@ -161,7 +177,12 @@ async function main() {
 
           try {
             const sellSignature = await sellTokens(connection, wallet, mint.publicKey);
-            console.log(`Tokens sold successfully! Signature: ${sellSignature}`);
+            logger.success(
+              `Tokens sold successfully! Signature: ${logger.formatTx(sellSignature)}`,
+            );
+
+            // End the current cycle
+            logger.endCycle();
 
             // Stop monitoring
             stopMonitoring();
@@ -169,25 +190,25 @@ async function main() {
             // Start the process again with a new wallet
             setTimeout(main, 5000);
           } catch (error) {
-            console.error('Error selling tokens:', error);
+            logger.error('Error selling tokens:', error);
           }
         }
       },
     );
   } catch (error) {
-    console.error('Error in main process:', error);
+    logger.error('Error in main process:', error);
   }
 }
 
 // Start the bot
-main().catch(console.error);
+main().catch((error) => logger.error('Unhandled error in main:', error));
 
 // Handle process termination
 process.on('SIGINT', () => {
-  console.log('Process terminated. Exiting...');
+  logger.warning('Process terminated. Exiting...');
   process.exit(0);
 });
 
 process.on('unhandledRejection', (error: Error | unknown) => {
-  console.error('Unhandled promise rejection:', error);
+  logger.error('Unhandled promise rejection:', error);
 });

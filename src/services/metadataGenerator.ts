@@ -1,11 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import axios from 'axios';
 import dotenv from 'dotenv';
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import { PinataSDK } from 'pinata';
 import Replicate from 'replicate';
-import { MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_SYMBOL_LENGTH } from '../config/constants';
+import { MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_SYMBOL_LENGTH } from '../config/constants.js';
+import logger from '../utils/logger.js';
 
 // Ensure environment variables are loaded
 dotenv.config();
@@ -51,7 +52,7 @@ export async function generateTokenMetadata(): Promise<{
   website?: string;
   telegram?: string;
 }> {
-  console.log('Generating token metadata with Claude API...');
+  logger.info('Generating token metadata with Claude API...');
 
   const prompt = `Generate a creative and catchy name and symbol for a new cryptocurrency token. 
 The name should be memorable, unique, and appealing to crypto investors.
@@ -112,7 +113,7 @@ Make sure the name and symbol are not offensive or too similar to existing major
       telegram: metadata.telegram,
     };
   } catch (error) {
-    console.error('Error generating token metadata:', error);
+    logger.error('Error generating token metadata:', error);
     throw error;
   }
 }
@@ -124,7 +125,7 @@ Make sure the name and symbol are not offensive or too similar to existing major
  * @returns URL of the generated image
  */
 export async function generateTokenImage(tokenName: string, tokenSymbol: string): Promise<string> {
-  console.log('Generating token image with Replicate API...');
+  logger.info('Generating token image with Replicate API...');
 
   // Use a more neutral prompt to avoid NSFW detection
   const prompt = `Create a simple, abstract logo for a cryptocurrency token called "${tokenName}" with the symbol "${tokenSymbol}". Use geometric shapes, clean lines, and a minimalist design. Avoid any controversial or suggestive imagery. Make it suitable for a professional financial application.`;
@@ -164,14 +165,15 @@ export async function generateTokenImage(tokenName: string, tokenSymbol: string)
       }
     } catch (error) {
       retryCount++;
-      console.log(
+      logger.warning(
         `Image generation attempt ${retryCount} failed. ${
           maxRetries - retryCount
         } attempts remaining.`,
+        error,
       );
 
       if (retryCount >= maxRetries) {
-        console.log('All image generation attempts failed. Using default image URL.');
+        logger.warning('All image generation attempts failed. Using default image URL.');
         // Return a default image URL if all attempts fail
         return (
           'https://placehold.co/512x512/4287f5/ffffff?text=' + encodeURIComponent(`${tokenSymbol}`)
@@ -197,7 +199,7 @@ export async function uploadToIPFS(
   metadata: Omit<TokenMetadata, 'image'>,
   imageUrl: string,
 ): Promise<string> {
-  console.log('Uploading token metadata and image to IPFS using Pinata...');
+  logger.info('Uploading token metadata and image to IPFS using Pinata...');
 
   try {
     // Create temp directory if it doesn't exist
@@ -219,7 +221,7 @@ export async function uploadToIPFS(
     const imageUploadResult = await pinata.upload.public.file(imageFile);
     const ipfsImageUrl = `ipfs://${imageUploadResult.cid}`;
     const httpsImageUrl = `https://ipfs.io/ipfs/${imageUploadResult.cid}`;
-    console.log(`Image uploaded to IPFS: ${ipfsImageUrl}`);
+    logger.success(`Image uploaded to IPFS: ${ipfsImageUrl}`);
 
     // Create the complete metadata with the IPFS image URL
     const completeMetadata: TokenMetadata = {
@@ -233,11 +235,11 @@ export async function uploadToIPFS(
     const metadataUploadResult = await pinata.upload.public.json(completeMetadata);
     const ipfsMetadataUrl = `ipfs://${metadataUploadResult.cid}`;
     const httpsMetadataUrl = `https://ipfs.io/ipfs/${metadataUploadResult.cid}`;
-    console.log(`Metadata uploaded to IPFS: ${ipfsMetadataUrl}`);
+    logger.success(`Metadata uploaded to IPFS: ${ipfsMetadataUrl}`);
 
     return httpsMetadataUrl; // Return HTTPS URL instead of IPFS URL
   } catch (error) {
-    console.error('Error uploading to IPFS:', error);
+    logger.error('Error uploading to IPFS:', error);
     throw error;
   }
 }

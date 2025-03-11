@@ -26,7 +26,8 @@ import {
   PUMP_FUN_PROGRAM,
   RENT,
   SYSTEM_PROGRAM,
-} from '../config/constants';
+} from '../config/constants.js';
+import logger from '../utils/logger.js';
 
 /**
  * Creates a token on PumpFun
@@ -46,7 +47,7 @@ export async function createToken(
   symbol: string,
   metadataUri: string,
 ): Promise<string> {
-  console.log(`Creating token ${name} (${symbol}) on PumpFun...`);
+  logger.info(`Creating token ${name} (${symbol}) on PumpFun...`);
 
   // Get all PDAs
   const bondingCurve = getBondingCurvePDA(mint.publicKey);
@@ -80,7 +81,7 @@ export async function createToken(
   const solAmountToBuy =
     MIN_SOL_AMOUNT_TO_BUY + Math.random() * (MAX_SOL_AMOUNT_TO_BUY - MIN_SOL_AMOUNT_TO_BUY);
 
-  console.log(`Will buy ${solAmountToBuy.toFixed(4)} SOL worth of tokens`);
+  logger.info(`Will buy ${solAmountToBuy.toFixed(4)} SOL worth of tokens`);
 
   // Check if payer has enough balance
   const requiredBalance =
@@ -235,10 +236,10 @@ export async function createToken(
     });
 
     await connection.confirmTransaction(signature, 'confirmed');
-    console.log(`Token created successfully! Signature: ${signature}`);
+    logger.info(`Token created successfully! Signature: ${signature}`);
     return signature;
   } catch (error) {
-    console.error('Error creating token:', error);
+    logger.error('Error creating token:', error);
     throw error;
   }
 }
@@ -257,7 +258,7 @@ export async function buyTokens(
   mintAddress: PublicKey,
   solAmount: number,
 ): Promise<string> {
-  console.log(`Buying tokens for mint ${mintAddress.toString()} with ${solAmount} SOL...`);
+  logger.info(`Buying tokens for mint ${logger.formatToken(mintAddress)} with ${solAmount} SOL...`);
 
   // Get the bonding curve PDA
   const bondingCurve = getBondingCurvePDA(mintAddress);
@@ -356,10 +357,10 @@ export async function buyTokens(
     });
 
     await connection.confirmTransaction(signature, 'confirmed');
-    console.log(`Tokens bought successfully! Signature: ${signature}`);
+    logger.info(`Tokens bought successfully! Signature: ${signature}`);
     return signature;
   } catch (error) {
-    console.error('Error buying tokens:', error);
+    logger.error('Error buying tokens:', error);
     throw error;
   }
 }
@@ -376,7 +377,7 @@ export async function sellTokens(
   payer: Keypair,
   mintAddress: PublicKey,
 ): Promise<string> {
-  console.log(`Selling tokens for mint ${mintAddress.toString()}...`);
+  logger.info(`Selling tokens for mint ${logger.formatToken(mintAddress)}...`);
 
   // Get the bonding curve PDA
   const bondingCurve = getBondingCurvePDA(mintAddress);
@@ -390,7 +391,7 @@ export async function sellTokens(
   // Check if the payer has a token account
   const tokenAccountInfo = await connection.getAccountInfo(payerAta);
   if (!tokenAccountInfo) {
-    console.log('No token account found for the payer. Creating a buy transaction instead...');
+    logger.warning('No token account found for the payer. Creating a buy transaction instead...');
     // If we don't have a token account, we can't sell. Let's buy some tokens instead.
     return buyTokens(connection, payer, mintAddress, 0.05); // Buy a small amount
   }
@@ -400,7 +401,7 @@ export async function sellTokens(
   const amount = BigInt(tokenBalance.value.amount);
 
   if (amount <= 0) {
-    console.log('No tokens to sell. Creating a buy transaction instead...');
+    logger.warning('No tokens to sell. Creating a buy transaction instead...');
     // If we don't have any tokens, we can't sell. Let's buy some tokens instead.
     return buyTokens(connection, payer, mintAddress, 0.05); // Buy a small amount
   }
@@ -478,10 +479,10 @@ export async function sellTokens(
     });
 
     await connection.confirmTransaction(signature, 'confirmed');
-    console.log(`Tokens sold successfully! Signature: ${signature}`);
+    logger.info(`Tokens sold successfully! Signature: ${signature}`);
     return signature;
   } catch (error) {
-    console.error('Error selling tokens:', error);
+    logger.error('Error selling tokens:', error);
     throw error;
   }
 }
