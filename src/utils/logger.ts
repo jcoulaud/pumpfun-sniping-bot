@@ -21,6 +21,7 @@ export enum LogLevel {
   ERROR = 'error',
   DEBUG = 'debug',
   CYCLE = 'cycle',
+  PROFIT = 'profit',
 }
 
 /**
@@ -42,6 +43,9 @@ export function startCycle(): number {
  * End the current cycle and log the duration
  */
 export function endCycle(): void {
+  // Reset the profit message tracker for the next cycle
+  profit.isFirstMessage = true;
+
   const duration = ((Date.now() - cycleStartTime) / 1000).toFixed(2);
 
   const divider = chalk.cyan('='.repeat(80));
@@ -104,6 +108,9 @@ export function log(level: LogLevel, message: string, data?: any): void {
     case LogLevel.CYCLE:
       formattedLevel = chalk.cyan('CYCLE');
       break;
+    case LogLevel.PROFIT:
+      formattedLevel = chalk.magenta('PROFIT');
+      break;
     default:
       formattedLevel = chalk.white('LOG');
   }
@@ -158,6 +165,33 @@ export function cycle(message: string, data?: any): void {
   log(LogLevel.CYCLE, message, data);
 }
 
+/**
+ * Shorthand for profit-related logs
+ */
+export function profit(message: string, data?: any): void {
+  // Create a box around profit messages to make them stand out
+  const boxWidth = message.length + 8;
+  const horizontalBorder = '─'.repeat(boxWidth);
+
+  // First message gets a newline before it, subsequent messages don't
+  const prefix = profit.isFirstMessage ? '\n' : '';
+  profit.isFirstMessage = false;
+
+  console.log(prefix + chalk.magenta(`┌${horizontalBorder}┐`));
+  console.log(chalk.magenta('│') + ' '.repeat(4) + message + ' '.repeat(4) + chalk.magenta('│'));
+  console.log(chalk.magenta(`└${horizontalBorder}┘`));
+}
+
+// Add a static property to track if this is the first message
+profit.isFirstMessage = true;
+
+/**
+ * Get the current cycle ID
+ */
+export function getCurrentCycleId(): number {
+  return currentCycleId;
+}
+
 export default {
   startCycle,
   endCycle,
@@ -171,4 +205,6 @@ export default {
   error,
   debug,
   cycle,
+  profit,
+  getCurrentCycleId,
 };

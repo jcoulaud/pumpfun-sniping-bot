@@ -11,6 +11,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { WALLET_DIRECTORY } from '../config/constants.js';
 
+// Path for storing profit/loss data
+const PNL_DIRECTORY = 'pnl';
+const PROFIT_LOG_PATH = path.join(PNL_DIRECTORY, 'profit_log.json');
+
 // Creates a new Solana wallet
 export function createWallet(): Keypair {
   return Keypair.generate();
@@ -121,4 +125,76 @@ export async function transferAllSol(
 
   transaction.sign(fromWallet);
   return await connection.sendRawTransaction(transaction.serialize());
+}
+
+// Calculates the profit/loss from a cycle
+export async function calculateCycleProfit(
+  connection: Connection,
+  initialBalance: number,
+  finalBalance: number,
+): Promise<number> {
+  return finalBalance - initialBalance;
+}
+
+/**
+ * Save profit/loss data to a persistent file
+ */
+export function saveProfitData(cycleId: number, profit: number, tokenAddress?: string): void {
+  // Create PnL directory if it doesn't exist
+  if (!fs.existsSync(PNL_DIRECTORY)) {
+    fs.mkdirSync(PNL_DIRECTORY, { recursive: true });
+  }
+
+  // Load existing data or create new data structure
+  let profitData: {
+    totalProfit: number;
+    cycles: Array<{
+      cycleId: number;
+      profit: number;
+      tokenAddress?: string;
+      timestamp: string;
+    }>;
+  };
+
+  try {
+    if (fs.existsSync(PROFIT_LOG_PATH)) {
+      profitData = JSON.parse(fs.readFileSync(PROFIT_LOG_PATH, 'utf-8'));
+    } else {
+      profitData = { totalProfit: 0, cycles: [] };
+    }
+  } catch (error) {
+    // If there's an error reading the file, start fresh
+    profitData = { totalProfit: 0, cycles: [] };
+  }
+
+  // Update the data
+  profitData.totalProfit += profit;
+  profitData.cycles.push({
+    cycleId,
+    profit,
+    tokenAddress,
+    timestamp: new Date().toISOString(),
+  });
+
+  // Save the data
+  fs.writeFileSync(PROFIT_LOG_PATH, JSON.stringify(profitData, null, 2));
+}
+
+/**
+ * Get the total profit/loss across all cycles
+ */
+export function getTotalProfit(): { totalProfit: number; cycleCount: number } {
+  try {
+    if (fs.existsSync(PROFIT_LOG_PATH)) {
+      const profitData = JSON.parse(fs.readFileSync(PROFIT_LOG_PATH, 'utf-8'));
+      return {
+        totalProfit: profitData.totalProfit,
+        cycleCount: profitData.cycles.length,
+      };
+    }
+  } catch (error) {
+    // If there's an error, return zero
+  }
+
+  return { totalProfit: 0, cycleCount: 0 };
 }

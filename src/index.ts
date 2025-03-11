@@ -1,4 +1,4 @@
-import { clusterApiUrl, Connection, Keypair } from '@solana/web3.js';
+import { clusterApiUrl, Connection, Keypair, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,9 +21,12 @@ import {
 } from './services/transactionMonitor.js';
 import logger from './utils/logger.js';
 import {
+  calculateCycleProfit,
   createWallet,
   getBalance,
+  getTotalProfit,
   loadWallet,
+  saveProfitData,
   saveWallet,
   transferAllSol,
 } from './utils/wallet.js';
@@ -58,6 +61,10 @@ async function main() {
     logger.info(`Created new wallet: ${logger.formatWallet(wallet.publicKey)}`);
     logger.debug(`Wallet saved to: ${walletPath}`);
 
+    // Track initial SOL balance for profit/loss calculation
+    let initialBalance = 0;
+    let previousWallet = null;
+
     // Check if there's a previous wallet to transfer funds from
     const previousWallets = fs
       .readdirSync(WALLET_DIRECTORY)
@@ -71,11 +78,14 @@ async function main() {
       });
 
       // Load the most recent wallet
-      const previousWallet = loadWallet(previousWallets[0]);
+      previousWallet = loadWallet(previousWallets[0]);
       logger.info(`Found previous wallet: ${logger.formatWallet(previousWallet.publicKey)}`);
 
       // Check if the previous wallet has enough SOL
       const balance = await getBalance(connection, previousWallet.publicKey);
+      initialBalance = balance; // Store initial balance for profit/loss calculation
+      logger.info(`Initial SOL balance: ${initialBalance} SOL`);
+
       const pumpfunFee = MIN_SOL_AMOUNT_TO_BUY * PUMPFUN_FEE_PERCENTAGE;
       const minRequiredBalance = MIN_SOL_AMOUNT_TO_BUY + pumpfunFee + TRANSACTION_FEE_BUFFER;
 
@@ -150,6 +160,15 @@ async function main() {
           const sellSignature = await sellTokens(connection, wallet, mint.publicKey);
           logger.success(`Tokens sold successfully! Signature: ${logger.formatTx(sellSignature)}`);
 
+          // Calculate and log profit/loss
+          await calculateAndLogProfit(
+            connection,
+            initialBalance,
+            wallet.publicKey,
+            previousWallet?.publicKey,
+            mint.publicKey,
+          );
+
           // End the current cycle
           logger.endCycle();
 
@@ -196,6 +215,15 @@ async function main() {
                 `Tokens sold successfully! Signature: ${logger.formatTx(sellSignature)}`,
               );
 
+              // Calculate and log profit/loss
+              await calculateAndLogProfit(
+                connection,
+                initialBalance,
+                wallet.publicKey,
+                previousWallet?.publicKey,
+                mint.publicKey,
+              );
+
               // End the current cycle
               logger.endCycle();
 
@@ -216,6 +244,69 @@ async function main() {
     );
   } catch (error) {
     logger.error('Error in main process:', error);
+  }
+}
+
+/**
+ * Helper function to calculate and log the profit/loss after a cycle
+ */
+async function calculateAndLogProfit(
+  connection: Connection,
+  initialBalance: number,
+  currentWalletPublicKey: Keypair['publicKey'],
+  previousWalletPublicKey?: Keypair['publicKey'],
+  tokenAddress?: PublicKey,
+): Promise<void> {
+  try {
+    // Get final balance from current wallet
+    const finalBalance = await getBalance(connection, currentWalletPublicKey);
+
+    // Check if there's any leftover SOL in the previous wallet
+    let leftoverBalance = 0;
+    if (previousWalletPublicKey) {
+      leftoverBalance = await getBalance(connection, previousWalletPublicKey);
+    }
+
+    // Calculate total final balance
+    const totalFinalBalance = finalBalance + leftoverBalance;
+
+    // Calculate profit/loss
+    const profit = await calculateCycleProfit(connection, initialBalance, totalFinalBalance);
+
+    // Get current cycle ID
+    const cycleId = logger.getCurrentCycleId();
+
+    // Save profit data with token address
+    saveProfitData(cycleId, profit, tokenAddress?.toString());
+
+    // Get total profit across all cycles
+    const { totalProfit, cycleCount } = getTotalProfit();
+
+    // Calculate percentage gain/loss
+    let percentageInfo = '';
+    if (initialBalance > 0) {
+      const percentageChange = (profit / initialBalance) * 100;
+      percentageInfo = ` (${Math.abs(percentageChange).toFixed(2)}%)`;
+    }
+
+    // Log token information right before the profit boxes if available
+    if (tokenAddress) {
+      logger.info(`Token address: ${logger.formatToken(tokenAddress)}`);
+    }
+
+    // Log the boxed profit displays (without token info)
+    logger.profit(
+      `Cycle #${cycleId} ${profit >= 0 ? 'PROFIT' : 'LOSS'}: ${profit.toFixed(
+        6,
+      )} SOL${percentageInfo}`,
+    );
+    logger.profit(
+      `Total ${
+        totalProfit >= 0 ? 'PROFIT' : 'LOSS'
+      } across ${cycleCount} cycles: ${totalProfit.toFixed(6)} SOL`,
+    );
+  } catch (error) {
+    logger.error('Error calculating profit/loss:', error);
   }
 }
 

@@ -98,11 +98,7 @@ export function monitorTokenTransactionsWebsocket(
   callback: (transaction: TransactionData) => void,
   walletPublicKey?: PublicKey,
 ): () => void {
-  logger.info(
-    `Starting to monitor transactions for mint ${logger.formatToken(
-      mintAddress,
-    )} using websocket...`,
-  );
+  logger.info(`Starting to monitor transactions for mint ${logger.formatToken(mintAddress)}...`);
 
   // Track processed signatures to avoid duplicates
   const processedSignatures = new Set<string>();

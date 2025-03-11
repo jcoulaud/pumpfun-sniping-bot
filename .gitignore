@@ -22,3 +22,6 @@ wallets/
 # Temporary files
 temp/
 temp/*
+
+# PnL data
+pnl/
