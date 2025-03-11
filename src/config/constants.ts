@@ -23,8 +23,8 @@ export const FEE_RECIPIENT = new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7Abicfh
 export const MINT_SIZE = 82;
 
 // Configuration constants
-export const MIN_SOL_AMOUNT_TO_BUY = 0.1;
-export const MAX_SOL_AMOUNT_TO_BUY = 0.15;
+export const MIN_SOL_AMOUNT_TO_BUY = 0.8;
+export const MAX_SOL_AMOUNT_TO_BUY = 1.1;
 export const TRANSACTION_FEE_BUFFER = 0.001; // Buffer for transaction fees (in SOL)
 export const PUMPFUN_FEE_PERCENTAGE = 0.01; // 1% fee charged by PumpFun for buys/sells on the bonding curve
 export const SELL_TIMEOUT_MS = 10000; // 10 seconds

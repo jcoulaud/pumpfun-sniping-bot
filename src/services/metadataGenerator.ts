@@ -61,38 +61,48 @@ export async function generateTokenMetadata(): Promise<{
 }> {
   logger.info('Generating token metadata with Claude API...');
 
-  const prompt = `Generate a completely random and creative concept for a token or virtual item.
+  const prompt = `Generate a completely random and HILARIOUS concept for a meme token or absurd virtual item.
 
-Each time this prompt is run, create something ENTIRELY DIFFERENT from previous runs. Be wildly creative and unpredictable.
+Each time this prompt is run, create something ENTIRELY DIFFERENT that would make people laugh or say "WTF?!" Be wildly creative, ridiculous, and unpredictable.
 
-Choose from these diverse categories (but don't limit yourself to them):
-- Fictional creatures or characters
-- Futuristic technology
-- Fantasy items or artifacts
-- Abstract concepts
-- Artistic movements
-- Imaginary foods
-- Mythological entities
-- Surreal landscapes
-- Invented sports or games
-- Fictional organizations
+Choose from these absurd categories (but don't limit yourself to them):
+- Food items with human personalities
+- Household objects with superpowers
+- Animals doing inappropriate human activities
+- Bodily functions turned into superheroes
+- Inanimate objects with existential crises
+- Cursed hybrid creatures (like "half-toaster, half-dolphin")
+- Everyday items but EXTREMELY specific versions
+- Ridiculous conspiracy theories as entities
+- Things that shouldn't be sentient but are
+- Absurd services no one asked for
+- Nonsensical sports with impossible rules
+- Fictional foods that would taste terrible
+- Bizarre phobias that don't exist
+- Appliances with emotional problems
+- Memes that went too far
+- Interdimensional bathroom products
+- Sentient body parts with their own agendas
+- Cursed emojis come to life
+- Extremely specific dating apps
+- Cosmic horrors but they're adorable
 
-The name should be memorable, unique, and creative (max ${MAX_TOKEN_NAME_LENGTH} characters).
-The symbol should be 2-${MAX_TOKEN_SYMBOL_LENGTH} characters, preferably 3-4 characters.
+The name should be MEMORABLE, FUNNY, and possibly make people uncomfortable (max ${MAX_TOKEN_NAME_LENGTH} characters).
+The symbol should be 2-${MAX_TOKEN_SYMBOL_LENGTH} characters, preferably something that makes you chuckle.
 
 Also generate:
 - Twitter/X profile URL (format: https://x.com/username)
-- Website URL (format: https://www.example.com)
+- Website URL (format: https://www.example.com or https://example.com)
 - Telegram group URL (format: https://t.me/groupname)
 
 Format your response as a JSON object with the following fields:
-- name: The item name (max ${MAX_TOKEN_NAME_LENGTH} characters)
-- symbol: The item symbol (max ${MAX_TOKEN_SYMBOL_LENGTH} characters)
+- name: The ridiculous item name (max ${MAX_TOKEN_NAME_LENGTH} characters)
+- symbol: The funny symbol (max ${MAX_TOKEN_SYMBOL_LENGTH} characters)
 - twitter: Complete Twitter/X URL (https://x.com/username)
-- website: Complete website URL (https://www.example.com)
+- website: Complete website URL (https://www.example.com or https://example.com)
 - telegram: Complete Telegram group URL (https://t.me/groupname)
 
-IMPORTANT: Each run should produce a completely different concept. Avoid repetitive themes or patterns.`;
+IMPORTANT: Each run should produce a completely different concept. Make it FUNNY, ABSURD, or WTF-worthy!`;
 
   try {
     const response = await anthropic.messages.create({
@@ -125,13 +135,37 @@ IMPORTANT: Each run should produce a completely different concept. Avoid repetit
       metadata.telegram = `https://t.me/${metadata.telegram}`;
     }
 
+    // Randomly decide which social media URLs to include
+    const includeSocials = {
+      twitter: Math.random() > 0.5,
+      website: Math.random() > 0.5,
+      telegram: Math.random() > 0.5,
+    };
+
+    // Randomly format website URL (with or without www)
+    if (includeSocials.website && metadata.website) {
+      // If website already has www, randomly remove it
+      if (metadata.website.includes('www.') && Math.random() > 0.5) {
+        metadata.website = metadata.website.replace('www.', '');
+      }
+      // If website doesn't have www, randomly add it
+      else if (!metadata.website.includes('www.') && Math.random() > 0.5) {
+        const urlParts = metadata.website.split('//');
+        if (urlParts.length > 1) {
+          metadata.website = `${urlParts[0]}//${urlParts[1].startsWith('www.') ? '' : 'www.'}${
+            urlParts[1]
+          }`;
+        }
+      }
+    }
+
     // Validate and trim metadata
     return {
       name: metadata.name.substring(0, MAX_TOKEN_NAME_LENGTH),
       symbol: metadata.symbol.substring(0, MAX_TOKEN_SYMBOL_LENGTH),
-      twitter: metadata.twitter,
-      website: metadata.website,
-      telegram: metadata.telegram,
+      twitter: includeSocials.twitter ? metadata.twitter : undefined,
+      website: includeSocials.website ? metadata.website : undefined,
+      telegram: includeSocials.telegram ? metadata.telegram : undefined,
     };
   } catch (error) {
     logger.error('Error generating token metadata:', error);
@@ -148,11 +182,12 @@ IMPORTANT: Each run should produce a completely different concept. Avoid repetit
 export async function generateTokenImage(tokenName: string, tokenSymbol: string): Promise<string> {
   logger.info('Generating token image with Replicate API...');
 
-  const prompt = `Create a visually striking and unique digital artwork representing "${tokenName}" (${tokenSymbol}). 
-Make it highly distinctive and creative, with vibrant colors and interesting visual elements.
-The image should be eye-catching and suitable as a token icon.
+  const prompt = `Create a HILARIOUS and ABSURD digital artwork representing "${tokenName}" (${tokenSymbol}). 
+Make it ridiculous, funny, and possibly a bit disturbing - something that would make people say "WTF?!"
+Use vibrant colors, weird visual elements, and unexpected combinations.
+The image should be eye-catching and memorable - think internet meme quality but original.
 Avoid text, words, or letters in the image.
-Create something that would look great as a profile picture or token.`;
+Create something that would make people laugh or be confused in the best possible way.`;
 
   const maxRetries = 3;
   let retryCount = 0;
