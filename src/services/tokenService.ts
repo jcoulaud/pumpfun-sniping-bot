@@ -24,8 +24,10 @@ import {
   MINT_SIZE,
   MPL_TOKEN_METADATA,
   PUMP_FUN_PROGRAM,
+  PUMPFUN_FEE_PERCENTAGE,
   RENT,
   SYSTEM_PROGRAM,
+  TRANSACTION_FEE_BUFFER,
 } from '../config/constants.js';
 import logger from '../utils/logger.js';
 
@@ -84,12 +86,26 @@ export async function createToken(
   logger.info(`Will buy ${solAmountToBuy.toFixed(4)} SOL worth of tokens`);
 
   // Check if payer has enough balance
+  const rentExemption = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
+  const pumpfunFee = solAmountToBuy * PUMPFUN_FEE_PERCENTAGE;
+  const transactionFees = TRANSACTION_FEE_BUFFER * LAMPORTS_PER_SOL;
   const requiredBalance =
-    (await connection.getMinimumBalanceForRentExemption(MINT_SIZE)) +
+    rentExemption +
     solAmountToBuy * LAMPORTS_PER_SOL +
-    0.05 * LAMPORTS_PER_SOL; // Additional 0.05 SOL for fees
+    pumpfunFee * LAMPORTS_PER_SOL +
+    transactionFees;
 
   const balance = await connection.getBalance(payer.publicKey);
+
+  // Log detailed breakdown of required funds
+  logger.debug('Required funds breakdown:');
+  logger.debug(`- Rent exemption: ${rentExemption / LAMPORTS_PER_SOL} SOL`);
+  logger.debug(`- Token purchase: ${solAmountToBuy} SOL`);
+  logger.debug(`- PumpFun fee (1%): ${pumpfunFee} SOL`);
+  logger.debug(`- Transaction fees: ${TRANSACTION_FEE_BUFFER} SOL`);
+  logger.debug(`- Total required: ${requiredBalance / LAMPORTS_PER_SOL} SOL`);
+  logger.debug(`- Current balance: ${balance / LAMPORTS_PER_SOL} SOL`);
+
   if (balance < requiredBalance) {
     throw new Error(
       `Insufficient funds. Required: ${requiredBalance / LAMPORTS_PER_SOL}, Current: ${
@@ -100,11 +116,11 @@ export async function createToken(
 
   // Create compute budget instructions
   const computeUnitLimitIx = ComputeBudgetProgram.setComputeUnitLimit({
-    units: 200000, // Reduce from 1,000,000 to 200,000 units
+    units: 600000, // Increase to 600,000 units for more headroom
   });
 
   const computeUnitPriceIx = ComputeBudgetProgram.setComputeUnitPrice({
-    microLamports: 20000, // Reduce from 1,000,000 to 20,000 microLamports (0.00002 SOL per 1 million compute units)
+    microLamports: 50000, // Increase to 50,000 microLamports to prioritize the transaction
   });
 
   // Create a new transaction
@@ -223,23 +239,76 @@ export async function createToken(
   try {
     // Sign and send transaction
     transaction.feePayer = payer.publicKey;
-    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+
+    // Get a fresh blockhash with higher priority
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+    transaction.recentBlockhash = blockhash;
 
     // Sign the transaction
     transaction.sign(payer, mint);
 
-    // Send transaction
-    const signature = await connection.sendRawTransaction(transaction.serialize(), {
-      skipPreflight: true, // Skip preflight to avoid simulation errors
-      preflightCommitment: 'confirmed',
-      maxRetries: 3,
+    // Log transaction size
+    const serializedTx = transaction.serialize();
+    logger.debug(`Transaction size: ${serializedTx.length} bytes`);
+
+    // Check if transaction is too large
+    if (serializedTx.length > 1232) {
+      logger.warning(
+        `Transaction size (${serializedTx.length} bytes) is approaching the limit. This may cause issues.`,
+      );
+    }
+
+    // Send transaction with skipPreflight set to true to bypass simulation
+    // This can help when the simulation is failing but the transaction would succeed on-chain
+    logger.info('Sending transaction...');
+    const signature = await connection.sendRawTransaction(serializedTx, {
+      skipPreflight: true, // Skip preflight checks to bypass simulation errors
+      preflightCommitment: 'finalized',
+      maxRetries: 5,
     });
 
-    await connection.confirmTransaction(signature, 'confirmed');
-    logger.info(`Token created successfully! Signature: ${signature}`);
+    logger.info(`Transaction submitted with signature: ${signature}`);
+    logger.info('Waiting for confirmation...');
+
+    // Wait for confirmation with a more detailed approach and longer timeout
+    const confirmation = await connection.confirmTransaction(
+      {
+        signature,
+        blockhash,
+        lastValidBlockHeight,
+      },
+      'confirmed',
+    );
+
+    if (confirmation.value.err) {
+      throw new Error(
+        `Transaction confirmed but failed: ${JSON.stringify(confirmation.value.err)}`,
+      );
+    }
+
     return signature;
   } catch (error) {
     logger.error('Error creating token:', error);
+
+    // Try to get more detailed error information
+    if (error instanceof Error) {
+      logger.error(`Error details: ${error.message}`);
+
+      // If it's a specific Solana error, try to provide more context
+      if (error.message.includes('ProgramFailedToComplete')) {
+        logger.error(
+          'This error typically occurs when the program runs out of compute units or encounters an unexpected condition.',
+        );
+        logger.error(
+          'Try increasing the compute budget or check if the PumpFun program has been updated.',
+        );
+      } else if (error.message.includes('Transaction simulation failed')) {
+        logger.error(
+          'Transaction simulation failed. This could be due to insufficient funds or program constraints.',
+        );
+      }
+    }
+
     throw error;
   }
 }
@@ -357,7 +426,6 @@ export async function buyTokens(
     });
 
     await connection.confirmTransaction(signature, 'confirmed');
-    logger.info(`Tokens bought successfully! Signature: ${signature}`);
     return signature;
   } catch (error) {
     logger.error('Error buying tokens:', error);
@@ -479,7 +547,6 @@ export async function sellTokens(
     });
 
     await connection.confirmTransaction(signature, 'confirmed');
-    logger.info(`Tokens sold successfully! Signature: ${signature}`);
     return signature;
   } catch (error) {
     logger.error('Error selling tokens:', error);

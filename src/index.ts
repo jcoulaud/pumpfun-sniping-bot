@@ -2,7 +2,13 @@ import { clusterApiUrl, Connection, Keypair } from '@solana/web3.js';
 import dotenv from 'dotenv';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MIN_SOL_AMOUNT_TO_BUY, SELL_TIMEOUT_MS, WALLET_DIRECTORY } from './config/constants.js';
+import {
+  MIN_SOL_AMOUNT_TO_BUY,
+  PUMPFUN_FEE_PERCENTAGE,
+  SELL_TIMEOUT_MS,
+  TRANSACTION_FEE_BUFFER,
+  WALLET_DIRECTORY,
+} from './config/constants.js';
 import {
   generateTokenImage,
   generateTokenMetadata,
@@ -72,7 +78,8 @@ async function main() {
 
       // Check if the previous wallet has enough SOL
       const balance = await getBalance(connection, previousWallet.publicKey);
-      const minRequiredBalance = MIN_SOL_AMOUNT_TO_BUY + 0.005; // MIN_SOL_AMOUNT_TO_BUY plus a small amount for transaction fees
+      const pumpfunFee = MIN_SOL_AMOUNT_TO_BUY * PUMPFUN_FEE_PERCENTAGE;
+      const minRequiredBalance = MIN_SOL_AMOUNT_TO_BUY + pumpfunFee + TRANSACTION_FEE_BUFFER;
 
       if (balance >= minRequiredBalance) {
         logger.info(`Previous wallet has ${balance} SOL. Transferring to new wallet...`);
@@ -169,31 +176,45 @@ async function main() {
           transaction.buyer &&
           !transaction.buyer.equals(wallet.publicKey)
         ) {
-          logger.success('Someone bought the token! Selling all tokens...');
-          someoneBought = true;
+          // Check if this is a recent transaction (within the last 30 seconds)
+          const currentTime = Date.now() / 1000;
+          const transactionAge = currentTime - transaction.timestamp;
 
-          // Clear the sell timer
-          clearTimeout(sellTimer);
-
-          try {
-            const sellSignature = await sellTokens(connection, wallet, mint.publicKey);
+          // Only process transactions that are recent (within 30 seconds)
+          if (transactionAge <= 30) {
             logger.success(
-              `Tokens sold successfully! Signature: ${logger.formatTx(sellSignature)}`,
+              `Someone bought the token! Transaction age: ${transactionAge.toFixed(
+                2,
+              )}s. Selling all tokens...`,
             );
+            someoneBought = true;
 
-            // End the current cycle
-            logger.endCycle();
+            // Clear the sell timer
+            clearTimeout(sellTimer);
 
-            // Stop monitoring
-            stopMonitoring();
+            try {
+              const sellSignature = await sellTokens(connection, wallet, mint.publicKey);
+              logger.success(
+                `Tokens sold successfully! Signature: ${logger.formatTx(sellSignature)}`,
+              );
 
-            // Start the process again with a new wallet
-            setTimeout(main, 5000);
-          } catch (error) {
-            logger.error('Error selling tokens:', error);
+              // End the current cycle
+              logger.endCycle();
+
+              // Stop monitoring
+              stopMonitoring();
+
+              // Start the process again with a new wallet
+              setTimeout(main, 5000);
+            } catch (error) {
+              logger.error('Error selling tokens:', error);
+            }
+          } else {
+            logger.warning(`Ignoring old transaction (${transactionAge.toFixed(2)}s old)`);
           }
         }
       },
+      wallet.publicKey, // Pass wallet public key to exclude our own transactions
     );
   } catch (error) {
     logger.error('Error in main process:', error);
