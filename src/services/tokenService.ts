@@ -33,13 +33,6 @@ import logger from '../utils/logger.js';
 
 /**
  * Creates a token on PumpFun
- * @param connection Solana connection
- * @param payer Wallet keypair
- * @param mint Keypair
- * @param name Token name
- * @param symbol String symbol
- * @param metadataUri IPFS URI of the token metadata
- * @returns Transaction signature
  */
 export async function createToken(
   connection: Connection,
@@ -315,11 +308,6 @@ export async function createToken(
 
 /**
  * Buys tokens from PumpFun
- * @param connection Solana connection
- * @param buyer Wallet keypair
- * @param mintAddress Mint address of the token
- * @param solAmount Amount of SOL to spend
- * @returns Transaction signature
  */
 export async function buyTokens(
   connection: Connection,
@@ -434,11 +422,7 @@ export async function buyTokens(
 }
 
 /**
- * Sells tokens from a wallet
- * @param connection Solana connection
- * @param payer Wallet keypair
- * @param mintAddress Mint address of the token
- * @returns Transaction signature
+ * Sells tokens on PumpFun
  */
 export async function sellTokens(
   connection: Connection,

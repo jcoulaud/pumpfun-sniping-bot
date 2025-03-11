@@ -44,9 +44,7 @@ const connection = new Connection(
   'confirmed',
 );
 
-/**
- * Main function to run the bot
- */
+// Main function to run the bot
 async function main() {
   try {
     // Start a new cycle

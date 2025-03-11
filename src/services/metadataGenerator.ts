@@ -8,20 +8,18 @@ import Replicate from 'replicate';
 import { MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_SYMBOL_LENGTH } from '../config/constants.js';
 import logger from '../utils/logger.js';
 
-// Ensure environment variables are loaded
+// Load environment variables
 dotenv.config();
 
-// Initialize the Claude API client properly using environment variables
+// Initialize API clients
 const anthropic = new Anthropic({
-  apiKey: process.env.CLAUDE_API_KEY, // This will be loaded from .env
+  apiKey: process.env.CLAUDE_API_KEY,
 });
 
-// Initialize the Replicate client
 const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN || '',
 });
 
-// Initialize the Pinata client using JWT as shown in the documentation
 const pinata = new PinataSDK({
   pinataJwt: process.env.PINATA_JWT || '',
   pinataGateway: process.env.PINATA_GATEWAY,
@@ -88,21 +86,20 @@ Format your response as a JSON object with the following fields:
 IMPORTANT: Each run should produce a completely different concept. Avoid repetitive themes or patterns.`;
 
   try {
-    // Using the SDK exactly as in the documentation
     const response = await anthropic.messages.create({
-      model: 'claude-3-haiku-20240307', // Using the specified model
+      model: 'claude-3-haiku-20240307',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }],
     });
 
-    // Extract the JSON from the response
+    // Extract JSON from response
     const content = response.content[0].type === 'text' ? response.content[0].text : '';
     const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```|({[\s\S]*})/);
     if (!jsonMatch) {
       throw new Error('Could not extract JSON from Claude response');
     }
 
-    // Parse the JSON content
+    // Parse JSON content
     const jsonContent = jsonMatch[1] || jsonMatch[2];
     const metadata = JSON.parse(jsonContent);
 
@@ -119,7 +116,7 @@ IMPORTANT: Each run should produce a completely different concept. Avoid repetit
       metadata.telegram = `https://t.me/${metadata.telegram}`;
     }
 
-    // Validate and trim the metadata
+    // Validate and trim metadata
     return {
       name: metadata.name.substring(0, MAX_TOKEN_NAME_LENGTH),
       symbol: metadata.symbol.substring(0, MAX_TOKEN_SYMBOL_LENGTH),
@@ -142,7 +139,6 @@ IMPORTANT: Each run should produce a completely different concept. Avoid repetit
 export async function generateTokenImage(tokenName: string, tokenSymbol: string): Promise<string> {
   logger.info('Generating token image with Replicate API...');
 
-  // Create a more diverse and creative prompt based on the name and symbol
   const prompt = `Create a visually striking and unique digital artwork representing "${tokenName}" (${tokenSymbol}). 
 Make it highly distinctive and creative, with vibrant colors and interesting visual elements.
 The image should be eye-catching and suitable as a token icon.
@@ -154,7 +150,6 @@ Create something that would look great as a profile picture or token.`;
 
   while (retryCount < maxRetries) {
     try {
-      // Using Stable Diffusion XL model for image generation
       const output = await replicate.run(
         'stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b',
         {
@@ -193,18 +188,16 @@ Create something that would look great as a profile picture or token.`;
 
       if (retryCount >= maxRetries) {
         logger.warning('All image generation attempts failed. Using default image URL.');
-        // Return a default image URL if all attempts fail
         return (
           'https://placehold.co/512x512/4287f5/ffffff?text=' + encodeURIComponent(`${tokenSymbol}`)
         );
       }
 
-      // Wait a bit before retrying
+      // Wait before retrying
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
 
-  // This should never be reached due to the return in the catch block, but TypeScript needs it
   return 'https://placehold.co/512x512/4287f5/ffffff?text=' + encodeURIComponent(`${tokenSymbol}`);
 }
 

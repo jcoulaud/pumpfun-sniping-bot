@@ -11,20 +11,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { WALLET_DIRECTORY } from '../config/constants.js';
 
-/**
- * Creates a new Solana wallet (keypair)
- * @returns The newly created keypair
- */
+// Creates a new Solana wallet
 export function createWallet(): Keypair {
   return Keypair.generate();
 }
 
-/**
- * Saves a wallet's keypair to a local file
- * @param keypair The keypair to save
- * @param filename Optional custom filename
- * @returns The path to the saved wallet file
- */
+// Saves a wallet's keypair to a local file
 export function saveWallet(keypair: Keypair, filename?: string): string {
   // Create wallet directory if it doesn't exist
   if (!fs.existsSync(WALLET_DIRECTORY)) {
@@ -45,11 +37,7 @@ export function saveWallet(keypair: Keypair, filename?: string): string {
   return walletPath;
 }
 
-/**
- * Loads a wallet from a local file
- * @param filePath Path to the wallet file
- * @returns The loaded keypair
- */
+// Loads a wallet from a local file
 export function loadWallet(filePath: string): Keypair {
   const walletData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 
@@ -66,14 +54,7 @@ export function loadWallet(filePath: string): Keypair {
   throw new Error('Invalid wallet format: no valid secret key found');
 }
 
-/**
- * Transfers SOL from one wallet to another
- * @param connection Solana connection
- * @param fromWallet Source wallet keypair
- * @param toWallet Destination wallet public key
- * @param amountSol Amount of SOL to transfer
- * @returns Transaction signature
- */
+// Transfers SOL from one wallet to another
 export async function transferSol(
   connection: Connection,
   fromWallet: Keypair,
@@ -101,24 +82,13 @@ export async function transferSol(
   return await connection.sendRawTransaction(transaction.serialize());
 }
 
-/**
- * Gets the SOL balance of a wallet
- * @param connection Solana connection
- * @param publicKey Wallet public key
- * @returns Balance in SOL
- */
+// Gets the SOL balance of a wallet
 export async function getBalance(connection: Connection, publicKey: PublicKey): Promise<number> {
   const balance = await connection.getBalance(publicKey);
   return balance / LAMPORTS_PER_SOL;
 }
 
-/**
- * Transfers all SOL from one wallet to another, minus fees
- * @param connection Solana connection
- * @param fromWallet Source wallet keypair
- * @param toWallet Destination wallet public key
- * @returns Transaction signature
- */
+// Transfers all SOL from one wallet to another, minus fees
 export async function transferAllSol(
   connection: Connection,
   fromWallet: Keypair,
