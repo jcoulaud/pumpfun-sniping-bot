@@ -54,23 +54,38 @@ export async function generateTokenMetadata(): Promise<{
 }> {
   logger.info('Generating token metadata with Claude API...');
 
-  const prompt = `Generate a creative and catchy name and symbol for a new cryptocurrency token. 
-The name should be memorable, unique, and appealing to crypto investors.
+  const prompt = `Generate a completely random and creative concept for a token or virtual item.
+
+Each time this prompt is run, create something ENTIRELY DIFFERENT from previous runs. Be wildly creative and unpredictable.
+
+Choose from these diverse categories (but don't limit yourself to them):
+- Fictional creatures or characters
+- Futuristic technology
+- Fantasy items or artifacts
+- Abstract concepts
+- Artistic movements
+- Imaginary foods
+- Mythological entities
+- Surreal landscapes
+- Invented sports or games
+- Fictional organizations
+
+The name should be memorable, unique, and creative (max ${MAX_TOKEN_NAME_LENGTH} characters).
 The symbol should be 2-${MAX_TOKEN_SYMBOL_LENGTH} characters, preferably 3-4 characters.
 
-Generate complete URLs for social media profiles:
+Also generate:
 - Twitter/X profile URL (format: https://x.com/username)
 - Website URL (format: https://www.example.com)
 - Telegram group URL (format: https://t.me/groupname)
 
 Format your response as a JSON object with the following fields:
-- name: The token name (max ${MAX_TOKEN_NAME_LENGTH} characters)
-- symbol: The token symbol (max ${MAX_TOKEN_SYMBOL_LENGTH} characters)
+- name: The item name (max ${MAX_TOKEN_NAME_LENGTH} characters)
+- symbol: The item symbol (max ${MAX_TOKEN_SYMBOL_LENGTH} characters)
 - twitter: Complete Twitter/X URL (https://x.com/username)
 - website: Complete website URL (https://www.example.com)
 - telegram: Complete Telegram group URL (https://t.me/groupname)
 
-Make sure the name and symbol are not offensive or too similar to existing major cryptocurrencies.`;
+IMPORTANT: Each run should produce a completely different concept. Avoid repetitive themes or patterns.`;
 
   try {
     // Using the SDK exactly as in the documentation
@@ -127,8 +142,12 @@ Make sure the name and symbol are not offensive or too similar to existing major
 export async function generateTokenImage(tokenName: string, tokenSymbol: string): Promise<string> {
   logger.info('Generating token image with Replicate API...');
 
-  // Use a more neutral prompt to avoid NSFW detection
-  const prompt = `Create a simple, abstract logo for a cryptocurrency token called "${tokenName}" with the symbol "${tokenSymbol}". Use geometric shapes, clean lines, and a minimalist design. Avoid any controversial or suggestive imagery. Make it suitable for a professional financial application.`;
+  // Create a more diverse and creative prompt based on the name and symbol
+  const prompt = `Create a visually striking and unique digital artwork representing "${tokenName}" (${tokenSymbol}). 
+Make it highly distinctive and creative, with vibrant colors and interesting visual elements.
+The image should be eye-catching and suitable as a token icon.
+Avoid text, words, or letters in the image.
+Create something that would look great as a profile picture or token.`;
 
   const maxRetries = 3;
   let retryCount = 0;
@@ -151,7 +170,7 @@ export async function generateTokenImage(tokenName: string, tokenSymbol: string)
             apply_watermark: false,
             high_noise_frac: 0.8,
             negative_prompt:
-              'nsfw, offensive, explicit, sexual, text, words, letters, signature, watermark, low quality, blurry',
+              'nsfw, offensive, explicit, sexual, text, words, letters, signature, watermark, cryptocurrency, crypto, coin, token, blockchain, low quality, blurry',
             prompt_strength: 0.8,
             num_inference_steps: 25,
           },
