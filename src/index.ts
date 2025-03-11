@@ -47,6 +47,101 @@ const connection = new Connection(
   'confirmed',
 );
 
+declare global {
+  var lastProfitCycleId: number | undefined;
+}
+
+// Track active monitoring cleanup functions
+let activeMonitoringCleanupFunctions: Set<() => void> = new Set();
+
+// Function to register a cleanup function
+function registerCleanupFunction(cleanupFn: () => void): void {
+  activeMonitoringCleanupFunctions.add(cleanupFn);
+}
+
+// Function to run all cleanup functions
+function runAllCleanupFunctions(): void {
+  activeMonitoringCleanupFunctions.forEach((cleanupFn) => {
+    try {
+      cleanupFn();
+    } catch (error) {
+      logger.error('Error during cleanup:', error);
+    }
+  });
+  activeMonitoringCleanupFunctions.clear();
+}
+
+function endCycleAndCleanup(): void {
+  runAllCleanupFunctions();
+  logger.endCycle();
+}
+
+/**
+ * Helper function to calculate and log the profit/loss after a cycle
+ */
+async function calculateAndLogProfit(
+  connection: Connection,
+  initialBalance: number,
+  currentWalletPublicKey: Keypair['publicKey'],
+  previousWalletPublicKey?: Keypair['publicKey'],
+  tokenAddress?: PublicKey,
+): Promise<void> {
+  // Get current cycle ID
+  const cycleId = logger.getCurrentCycleId();
+
+  // Check if profit has already been calculated for this cycle
+  if (global.hasOwnProperty('lastProfitCycleId') && global.lastProfitCycleId === cycleId) {
+    logger.debug(`Profit already calculated for cycle #${cycleId}, skipping duplicate calculation`);
+    return;
+  }
+
+  try {
+    // Get final balance from current wallet
+    const finalBalance = await getBalance(connection, currentWalletPublicKey);
+
+    // Check if there's any leftover SOL in the previous wallet
+    let leftoverBalance = 0;
+    if (previousWalletPublicKey) {
+      leftoverBalance = await getBalance(connection, previousWalletPublicKey);
+    }
+
+    // Calculate total final balance
+    const totalFinalBalance = finalBalance + leftoverBalance;
+
+    // Calculate profit/loss
+    const profit = await calculateCycleProfit(connection, initialBalance, totalFinalBalance);
+
+    // Save profit data with token address
+    saveProfitData(cycleId, profit, tokenAddress?.toString());
+
+    // Get total profit across all cycles
+    const { totalProfit, cycleCount } = getTotalProfit();
+
+    // Calculate percentage gain/loss
+    let percentageInfo = '';
+    if (initialBalance > 0) {
+      const percentageChange = (profit / initialBalance) * 100;
+      percentageInfo = ` (${Math.abs(percentageChange).toFixed(2)}%)`;
+    }
+
+    // Log the boxed profit displays (without token info)
+    logger.profit(
+      `Cycle #${cycleId} ${profit >= 0 ? 'PROFIT' : 'LOSS'}: ${profit.toFixed(
+        6,
+      )} SOL${percentageInfo}`,
+    );
+    logger.profit(
+      `Total ${
+        totalProfit >= 0 ? 'PROFIT' : 'LOSS'
+      } across ${cycleCount} cycles: ${totalProfit.toFixed(6)} SOL`,
+    );
+
+    global.lastProfitCycleId = cycleId;
+  } catch (error) {
+    logger.error('Error calculating profit/loss:', error);
+  }
+}
+
 // Main function to run the bot
 async function main() {
   try {
@@ -149,14 +244,18 @@ async function main() {
 
     // Set up a flag to track if someone has bought the token
     let someoneBought = false;
+    // Add a flag to track if we're already selling tokens
+    let isSellingTokens = false;
 
     // Set up a timer to sell tokens after the timeout
     const sellTimer = setTimeout(async () => {
-      if (!someoneBought) {
+      if (!someoneBought && !isSellingTokens) {
         logger.cycle(
           `No one bought the token within ${SELL_TIMEOUT_MS / 1000} seconds. Selling all tokens...`,
         );
         try {
+          isSellingTokens = true;
+
           const sellSignature = await sellTokens(connection, wallet, mint.publicKey);
           logger.success(`Tokens sold successfully! Signature: ${logger.formatTx(sellSignature)}`);
 
@@ -169,13 +268,16 @@ async function main() {
             mint.publicKey,
           );
 
-          // End the current cycle
-          logger.endCycle();
+          stopMonitoring();
+          endCycleAndCleanup();
 
           // Start the process again with a new wallet
           setTimeout(main, 5000);
         } catch (error) {
           logger.error('Error selling tokens:', error);
+
+          stopMonitoring();
+          endCycleAndCleanup();
         }
       }
     }, SELL_TIMEOUT_MS);
@@ -185,7 +287,8 @@ async function main() {
       connection,
       mint.publicKey,
       async (transaction) => {
-        logger.debug('Transaction detected:', transaction);
+        // Skip processing if we're already selling tokens or someone already bought
+        if (isSellingTokens || someoneBought) return;
 
         // If someone bought the token and it's not our own transaction
         if (
@@ -204,7 +307,9 @@ async function main() {
                 2,
               )}s. Selling all tokens...`,
             );
+
             someoneBought = true;
+            isSellingTokens = true;
 
             // Clear the sell timer
             clearTimeout(sellTimer);
@@ -224,16 +329,16 @@ async function main() {
                 mint.publicKey,
               );
 
-              // End the current cycle
-              logger.endCycle();
-
-              // Stop monitoring
               stopMonitoring();
+              endCycleAndCleanup();
 
               // Start the process again with a new wallet
               setTimeout(main, 5000);
             } catch (error) {
               logger.error('Error selling tokens:', error);
+
+              stopMonitoring();
+              endCycleAndCleanup();
             }
           } else {
             logger.warning(`Ignoring old transaction (${transactionAge.toFixed(2)}s old)`);
@@ -242,83 +347,35 @@ async function main() {
       },
       wallet.publicKey, // Pass wallet public key to exclude our own transactions
     );
+
+    // Register the monitoring cleanup function
+    registerCleanupFunction(stopMonitoring);
+
+    // Add a cleanup function to ensure monitoring is stopped if the process is terminated
+    process.on('SIGINT', () => {
+      logger.warning('Process terminated. Exiting...');
+      runAllCleanupFunctions();
+      process.exit(0);
+    });
+
+    process.on('SIGTERM', () => {
+      logger.warning('Process terminated. Exiting...');
+      runAllCleanupFunctions();
+      process.exit(0);
+    });
   } catch (error) {
-    logger.error('Error in main process:', error);
-  }
-}
-
-/**
- * Helper function to calculate and log the profit/loss after a cycle
- */
-async function calculateAndLogProfit(
-  connection: Connection,
-  initialBalance: number,
-  currentWalletPublicKey: Keypair['publicKey'],
-  previousWalletPublicKey?: Keypair['publicKey'],
-  tokenAddress?: PublicKey,
-): Promise<void> {
-  try {
-    // Get final balance from current wallet
-    const finalBalance = await getBalance(connection, currentWalletPublicKey);
-
-    // Check if there's any leftover SOL in the previous wallet
-    let leftoverBalance = 0;
-    if (previousWalletPublicKey) {
-      leftoverBalance = await getBalance(connection, previousWalletPublicKey);
-    }
-
-    // Calculate total final balance
-    const totalFinalBalance = finalBalance + leftoverBalance;
-
-    // Calculate profit/loss
-    const profit = await calculateCycleProfit(connection, initialBalance, totalFinalBalance);
-
-    // Get current cycle ID
-    const cycleId = logger.getCurrentCycleId();
-
-    // Save profit data with token address
-    saveProfitData(cycleId, profit, tokenAddress?.toString());
-
-    // Get total profit across all cycles
-    const { totalProfit, cycleCount } = getTotalProfit();
-
-    // Calculate percentage gain/loss
-    let percentageInfo = '';
-    if (initialBalance > 0) {
-      const percentageChange = (profit / initialBalance) * 100;
-      percentageInfo = ` (${Math.abs(percentageChange).toFixed(2)}%)`;
-    }
-
-    // Log token information right before the profit boxes if available
-    if (tokenAddress) {
-      logger.info(`Token address: ${logger.formatToken(tokenAddress)}`);
-    }
-
-    // Log the boxed profit displays (without token info)
-    logger.profit(
-      `Cycle #${cycleId} ${profit >= 0 ? 'PROFIT' : 'LOSS'}: ${profit.toFixed(
-        6,
-      )} SOL${percentageInfo}`,
-    );
-    logger.profit(
-      `Total ${
-        totalProfit >= 0 ? 'PROFIT' : 'LOSS'
-      } across ${cycleCount} cycles: ${totalProfit.toFixed(6)} SOL`,
-    );
-  } catch (error) {
-    logger.error('Error calculating profit/loss:', error);
+    logger.error('Error in main function:', error);
+    endCycleAndCleanup();
   }
 }
 
 // Start the bot
-main().catch((error) => logger.error('Unhandled error in main:', error));
-
-// Handle process termination
-process.on('SIGINT', () => {
-  logger.warning('Process terminated. Exiting...');
-  process.exit(0);
+main().catch((error) => {
+  logger.error('Unhandled error in main:', error);
+  runAllCleanupFunctions();
 });
 
+// Handle unhandled promise rejections
 process.on('unhandledRejection', (error: Error | unknown) => {
   logger.error('Unhandled promise rejection:', error);
 });

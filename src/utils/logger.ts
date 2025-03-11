@@ -10,6 +10,7 @@ const SOLSCAN_TOKEN_URL = `${SOLSCAN_BASE_URL}/token`;
 // Cycle tracking
 let currentCycleId = 0;
 let cycleStartTime = Date.now();
+let cycleEnded = false;
 
 /**
  * Logger levels
@@ -30,6 +31,7 @@ export enum LogLevel {
 export function startCycle(): number {
   currentCycleId++;
   cycleStartTime = Date.now();
+  cycleEnded = false;
 
   const divider = chalk.cyan('='.repeat(80));
   console.log('\n' + divider);
@@ -43,6 +45,15 @@ export function startCycle(): number {
  * End the current cycle and log the duration
  */
 export function endCycle(): void {
+  // Prevent duplicate cycle endings
+  if (cycleEnded) {
+    debug(`Cycle #${currentCycleId} already ended, ignoring duplicate endCycle call`);
+    return;
+  }
+
+  // Mark the cycle as ended
+  cycleEnded = true;
+
   // Reset the profit message tracker for the next cycle
   profit.isFirstMessage = true;
 
