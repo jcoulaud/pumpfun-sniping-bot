@@ -15,6 +15,13 @@ An automated token creation and sniping bot for Solana using PumpFun. Creates to
 - Saves wallets in JSON format with base58-encoded keys for compatibility
 - Tracks performance and profit/loss metrics
 
+## TODO
+
+- [ ] Implement news event monitoring system to automatically detect trending topics
+- [ ] Create tokens based on real-time news events and market trends
+- [ ] Add sentiment analysis to evaluate potential token popularity
+- [ ] Develop automated deployment triggers based on news relevance scores
+
 ## Prerequisites
 
 - Node.js v18.12 or higher
