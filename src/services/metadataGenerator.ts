@@ -20,6 +20,15 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN || '',
 });
 
+// Validate Pinata configuration
+if (!process.env.PINATA_JWT) {
+  logger.error('PINATA_JWT environment variable is not configured');
+}
+
+if (!process.env.PINATA_GATEWAY) {
+  logger.error('PINATA_GATEWAY environment variable is not configured');
+}
+
 const pinata = new PinataSDK({
   pinataJwt: process.env.PINATA_JWT || '',
   pinataGateway: process.env.PINATA_GATEWAY,
@@ -232,13 +241,13 @@ export async function uploadToIPFS(
     // Upload the image to IPFS via Pinata
     const imageUploadResult = await pinata.upload.public.file(imageFile);
     const ipfsImageUrl = `ipfs://${imageUploadResult.cid}`;
-    const httpsImageUrl = `https://ipfs.io/ipfs/${imageUploadResult.cid}`;
+    const httpsImageUrl = `https://${process.env.PINATA_GATEWAY}/ipfs/${imageUploadResult.cid}`;
     logger.success(`Image uploaded to IPFS: ${ipfsImageUrl}`);
 
     // Create the complete metadata with the IPFS image URL
     const completeMetadata: TokenMetadata = {
       ...metadata,
-      image: httpsImageUrl, // Use HTTPS URL instead of IPFS URL
+      image: httpsImageUrl,
       showName: true,
       createdOn: 'https://pump.fun',
     };
@@ -246,10 +255,10 @@ export async function uploadToIPFS(
     // Upload the metadata to IPFS via Pinata
     const metadataUploadResult = await pinata.upload.public.json(completeMetadata);
     const ipfsMetadataUrl = `ipfs://${metadataUploadResult.cid}`;
-    const httpsMetadataUrl = `https://ipfs.io/ipfs/${metadataUploadResult.cid}`;
+    const httpsMetadataUrl = `https://${process.env.PINATA_GATEWAY}/ipfs/${metadataUploadResult.cid}`;
     logger.success(`Metadata uploaded to IPFS: ${ipfsMetadataUrl}`);
 
-    return httpsMetadataUrl; // Return HTTPS URL instead of IPFS URL
+    return httpsMetadataUrl;
   } catch (error) {
     logger.error('Error uploading to IPFS:', error);
     throw error;
