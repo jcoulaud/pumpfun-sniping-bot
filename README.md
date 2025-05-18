@@ -1,6 +1,6 @@
 # PumpFun Bot
 
-An automated token creation and sniping bot for Solana using PumpFun. Creates tokens and monitors for sniper buys, then sells immediately after for quick profits.
+An automated token creation and sniping bot for Solana using Pump.fun. It creates tokens, detects sniper buys, and sells into them — making profit off the snipers, not regular traders.
 
 ## Features
 
