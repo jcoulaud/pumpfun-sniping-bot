@@ -1,38 +1,14 @@
-import {
-  createAssociatedTokenAccountInstruction,
-  getAssociatedTokenAddress,
-  TOKEN_PROGRAM_ID,
-} from '@solana/spl-token';
-import {
-  ComputeBudgetProgram,
-  Connection,
-  Keypair,
-  LAMPORTS_PER_SOL,
-  PublicKey,
-  Transaction,
-  TransactionInstruction,
-} from '@solana/web3.js';
-import {
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-  DEFAULT_SLIPPAGE_BASIS_POINTS,
-  EVENT_AUTHORITY,
-  FEE_RECIPIENT,
-  GLOBAL,
-  MAX_SOL_AMOUNT_TO_BUY,
-  MIN_SOL_AMOUNT_TO_BUY,
-  MINT_AUTHORITY,
-  MINT_SIZE,
-  MPL_TOKEN_METADATA,
-  PUMP_FUN_PROGRAM,
-  PUMPFUN_FEE_PERCENTAGE,
-  RENT,
-  SYSTEM_PROGRAM,
-  TRANSACTION_FEE_BUFFER,
-} from '../config/constants.js';
+import { PUMP_PROGRAM_ID, PumpSdk, getBuyTokenAmountFromSolAmount } from '@pump-fun/pump-sdk';
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction } from '@solana/web3.js';
+import BN from 'bn.js';
+import { botConfig } from '../config/botConfig.js';
 import logger from '../utils/logger.js';
+import { withTransactionRetry } from '../utils/retry.js';
+
+const DEFAULT_DECIMALS = 6;
 
 /**
- * Creates a token on PumpFun
+ * Creates a token on PumpFun using the official SDK
  */
 export async function createToken(
   connection: Connection,
@@ -42,508 +18,384 @@ export async function createToken(
   symbol: string,
   metadataUri: string,
 ): Promise<string> {
-  logger.info(`Creating token ${name} (${symbol}) on PumpFun...`);
+  return withTransactionRetry(async () => {
+    logger.info(`Creating token ${name} (${symbol}) on PumpFun using official SDK...`);
 
-  // Get all PDAs
-  const bondingCurve = getBondingCurvePDA(mint.publicKey);
+    // Validate inputs
+    if (!name || !symbol || !metadataUri) {
+      throw new Error('Invalid token parameters: name, symbol, and metadataUri are required');
+    }
 
-  const [metadata] = PublicKey.findProgramAddressSync(
-    [Buffer.from('metadata'), MPL_TOKEN_METADATA.toBuffer(), mint.publicKey.toBuffer()],
-    MPL_TOKEN_METADATA,
-  );
+    if (name.length > 32 || symbol.length > 10) {
+      throw new Error('Token name must be ≤32 chars and symbol must be ≤10 chars');
+    }
 
-  const associatedBondingCurve = await getAssociatedTokenAddress(
-    mint.publicKey,
-    bondingCurve,
-    true,
-  );
+    // Create SDK instance
+    const sdk = new PumpSdk(connection, PUMP_PROGRAM_ID);
 
-  // Get the associated token account for the payer
-  const payerAta = await getAssociatedTokenAddress(mint.publicKey, payer.publicKey, false);
+    // Get current wallet balance
+    const walletBalance = await connection.getBalance(payer.publicKey);
+    const walletBalanceSOL = walletBalance / LAMPORTS_PER_SOL;
 
-  // Check if accounts already exist
-  const [mintInfo, bondingCurveInfo, metadataInfo] = await Promise.all([
-    connection.getAccountInfo(mint.publicKey),
-    connection.getAccountInfo(bondingCurve),
-    connection.getAccountInfo(metadata),
-  ]);
+    // Calculate buy amount as 70-80% of wallet balance, capped at 2 SOL
+    const minPercentage = 0.7; // 70%
+    const maxPercentage = 0.8; // 80%
+    const randomPercentage = minPercentage + Math.random() * (maxPercentage - minPercentage);
 
-  if (mintInfo || bondingCurveInfo || metadataInfo) {
-    throw new Error('One or more accounts already exist');
-  }
+    const calculatedAmount = walletBalanceSOL * randomPercentage;
+    const maxAmount = 2.0; // 2 SOL cap
+    const solAmountToBuy = Math.min(calculatedAmount, maxAmount);
 
-  // Generate a random SOL amount to buy between MIN and MAX
-  const solAmountToBuy =
-    MIN_SOL_AMOUNT_TO_BUY + Math.random() * (MAX_SOL_AMOUNT_TO_BUY - MIN_SOL_AMOUNT_TO_BUY);
+    // Ensure we have enough balance for fees
+    const estimatedFees = 0.01; // Estimate for transaction fees
+    if (solAmountToBuy + estimatedFees > walletBalanceSOL) {
+      throw new Error(
+        `Insufficient balance. Wallet: ${walletBalanceSOL.toFixed(4)} SOL, ` +
+          `Required: ${(solAmountToBuy + estimatedFees).toFixed(4)} SOL`,
+      );
+    }
 
-  logger.info(`Will buy ${solAmountToBuy.toFixed(4)} SOL worth of tokens`);
-
-  // Check if payer has enough balance
-  const rentExemption = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
-  const pumpfunFee = solAmountToBuy * PUMPFUN_FEE_PERCENTAGE;
-  const transactionFees = TRANSACTION_FEE_BUFFER * LAMPORTS_PER_SOL;
-  const requiredBalance =
-    rentExemption +
-    solAmountToBuy * LAMPORTS_PER_SOL +
-    pumpfunFee * LAMPORTS_PER_SOL +
-    transactionFees;
-
-  const balance = await connection.getBalance(payer.publicKey);
-
-  // Log detailed breakdown of required funds
-  logger.debug('Required funds breakdown:');
-  logger.debug(`- Rent exemption: ${rentExemption / LAMPORTS_PER_SOL} SOL`);
-  logger.debug(`- Token purchase: ${solAmountToBuy} SOL`);
-  logger.debug(`- PumpFun fee (1%): ${pumpfunFee} SOL`);
-  logger.debug(`- Transaction fees: ${TRANSACTION_FEE_BUFFER} SOL`);
-  logger.debug(`- Total required: ${requiredBalance / LAMPORTS_PER_SOL} SOL`);
-  logger.debug(`- Current balance: ${balance / LAMPORTS_PER_SOL} SOL`);
-
-  if (balance < requiredBalance) {
-    throw new Error(
-      `Insufficient funds. Required: ${requiredBalance / LAMPORTS_PER_SOL}, Current: ${
-        balance / LAMPORTS_PER_SOL
-      }`,
+    logger.info(
+      `Wallet balance: ${walletBalanceSOL.toFixed(4)} SOL, ` +
+        `Using: ${(randomPercentage * 100).toFixed(1)}% = ${solAmountToBuy.toFixed(4)} SOL`,
     );
-  }
 
-  // Create compute budget instructions
-  const computeUnitLimitIx = ComputeBudgetProgram.setComputeUnitLimit({
-    units: 600000, // Increase to 600,000 units for more headroom
-  });
+    // Create transaction
+    const transaction = new Transaction();
 
-  const computeUnitPriceIx = ComputeBudgetProgram.setComputeUnitPrice({
-    microLamports: 50000, // Increase to 50,000 microLamports to prioritize the transaction
-  });
-
-  // Create a new transaction
-  const transaction = new Transaction();
-
-  // Add compute budget instructions
-  transaction.add(computeUnitLimitIx);
-  transaction.add(computeUnitPriceIx);
-
-  // Create instruction data with proper arguments for create
-  const createDiscriminator = Buffer.from([24, 30, 200, 40, 5, 28, 7, 119]);
-
-  // Serialize the name, symbol, uri, and creator
-  const nameBuffer = Buffer.from(name);
-  const nameLength = Buffer.alloc(4);
-  nameLength.writeUInt32LE(nameBuffer.length, 0);
-
-  const symbolBuffer = Buffer.from(symbol);
-  const symbolLength = Buffer.alloc(4);
-  symbolLength.writeUInt32LE(symbolBuffer.length, 0);
-
-  const uriBuffer = Buffer.from(metadataUri);
-  const uriLength = Buffer.alloc(4);
-  uriLength.writeUInt32LE(uriBuffer.length, 0);
-
-  const creatorBuffer = payer.publicKey.toBuffer();
-
-  // Construct the data buffer for create
-  const createData = Buffer.concat([
-    createDiscriminator,
-    nameLength,
-    nameBuffer,
-    symbolLength,
-    symbolBuffer,
-    uriLength,
-    uriBuffer,
-    creatorBuffer,
-  ]);
-
-  // Create instruction for token creation
-  const createIx = new TransactionInstruction({
-    programId: PUMP_FUN_PROGRAM,
-    keys: [
-      { pubkey: mint.publicKey, isSigner: true, isWritable: true },
-      { pubkey: MINT_AUTHORITY, isSigner: false, isWritable: false },
-      { pubkey: bondingCurve, isSigner: false, isWritable: true },
-      { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
-      { pubkey: GLOBAL, isSigner: false, isWritable: false },
-      { pubkey: MPL_TOKEN_METADATA, isSigner: false, isWritable: false },
-      { pubkey: metadata, isSigner: false, isWritable: true },
-      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
-      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: RENT, isSigner: false, isWritable: false },
-      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },
-      { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
-    ],
-    data: createData,
-  });
-
-  transaction.add(createIx);
-
-  // Add instruction to create token account for the payer
-  transaction.add(
-    createAssociatedTokenAccountInstruction(
-      payer.publicKey,
-      payerAta,
-      payer.publicKey,
+    // Add create instruction
+    const createIx = await sdk.createInstruction(
       mint.publicKey,
-    ),
-  );
+      name,
+      symbol,
+      metadataUri,
+      payer.publicKey, // creator
+      payer.publicKey, // user
+    );
+    transaction.add(createIx);
 
-  // Create instruction data with proper arguments for buy
-  const buyDiscriminator = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
+    // Get global state for buy instruction
+    const global = await sdk.fetchGlobal();
 
-  // Calculate buy amount with slippage
-  const buyAmountSol = BigInt(Math.floor(solAmountToBuy * LAMPORTS_PER_SOL));
-  const slippageBasisPoints = BigInt(DEFAULT_SLIPPAGE_BASIS_POINTS);
-  // Add slippage to the buy amount (e.g., 5% more SOL)
-  const maxSolCost = buyAmountSol + (buyAmountSol * slippageBasisPoints) / BigInt(10000);
+    // For new tokens, create a virtual bonding curve state
+    const virtualBondingCurve = {
+      virtualTokenReserves: global.initialVirtualTokenReserves,
+      virtualSolReserves: global.initialVirtualSolReserves,
+      realTokenReserves: global.initialRealTokenReserves,
+      realSolReserves: new BN(0),
+      tokenTotalSupply: global.tokenTotalSupply,
+      complete: false,
+      creator: payer.publicKey,
+    };
 
-  // Serialize the amount and maxSolCost as u64 values
-  const amountBuffer = Buffer.alloc(8);
-  const maxSolCostBuffer = Buffer.alloc(8);
+    // Calculate token amount from SOL amount
+    const buyAmountSol = new BN(Math.floor(solAmountToBuy * LAMPORTS_PER_SOL));
+    const tokenAmount = getBuyTokenAmountFromSolAmount(
+      global,
+      virtualBondingCurve,
+      buyAmountSol,
+      true, // newCoin = true
+    );
 
-  // Write the values as little-endian
-  amountBuffer.writeBigUInt64LE(buyAmountSol);
-  maxSolCostBuffer.writeBigUInt64LE(maxSolCost);
+    logger.info(`Calculated token amount: ${tokenAmount.toString()} tokens`);
 
-  // Construct the data buffer for buy
-  const buyData = Buffer.concat([buyDiscriminator, amountBuffer, maxSolCostBuffer]);
+    // Add a small buffer to the slippage for precision issues
+    const slippage = Math.max(
+      botConfig.trading.slippageBasisPoints / 10000,
+      0.01, // Minimum 1% slippage
+    );
 
-  // Create buy instruction
-  const buyIx = new TransactionInstruction({
-    programId: PUMP_FUN_PROGRAM,
-    keys: [
-      { pubkey: GLOBAL, isSigner: false, isWritable: false },
-      { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
-      { pubkey: mint.publicKey, isSigner: false, isWritable: false },
-      { pubkey: bondingCurve, isSigner: false, isWritable: true },
-      { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
-      { pubkey: payerAta, isSigner: false, isWritable: true },
-      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
-      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: RENT, isSigner: false, isWritable: false },
-      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },
-      { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
-    ],
-    data: buyData,
-  });
+    // Reduce token amount slightly to account for slippage precision
+    const adjustedTokenAmount = tokenAmount.mul(new BN(99)).div(new BN(100)); // 1% buffer
 
-  transaction.add(buyIx);
+    // Add buy instructions
+    const buyInstructions = await sdk.buyInstructions(
+      global,
+      null, // bondingCurveAccountInfo is null for new tokens
+      null as any, // bondingCurve is null for new tokens
+      mint.publicKey,
+      payer.publicKey,
+      adjustedTokenAmount, // adjusted token amount
+      buyAmountSol, // SOL amount
+      slippage,
+      payer.publicKey, // newCoinCreator
+    );
 
-  try {
+    transaction.add(...buyInstructions);
+
     // Sign and send transaction
     transaction.feePayer = payer.publicKey;
-
-    // Get a fresh blockhash with higher priority
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+    const { blockhash } = await connection.getLatestBlockhash();
     transaction.recentBlockhash = blockhash;
 
-    // Sign the transaction
+    // Sign with both payer and mint keypairs
     transaction.sign(payer, mint);
 
-    // Log transaction size
-    const serializedTx = transaction.serialize();
-    logger.debug(`Transaction size: ${serializedTx.length} bytes`);
-
-    // Check if transaction is too large
-    if (serializedTx.length > 1232) {
-      logger.warning(
-        `Transaction size (${serializedTx.length} bytes) is approaching the limit. This may cause issues.`,
-      );
-    }
-
-    // Send transaction with skipPreflight set to true to bypass simulation
-    // This can help when the simulation is failing but the transaction would succeed on-chain
-    logger.info('Sending transaction...');
-    const signature = await connection.sendRawTransaction(serializedTx, {
-      skipPreflight: true, // Skip preflight checks to bypass simulation errors
-      preflightCommitment: 'finalized',
-      maxRetries: 5,
+    // Send transaction
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: 'confirmed',
     });
 
-    logger.info(`Transaction submitted with signature: ${signature}`);
-    logger.info('Waiting for confirmation...');
-
-    // Wait for confirmation with a more detailed approach and longer timeout
-    const confirmation = await connection.confirmTransaction(
-      {
-        signature,
-        blockhash,
-        lastValidBlockHeight,
-      },
-      'confirmed',
+    // Wait for confirmation with timeout
+    const confirmationPromise = connection.confirmTransaction(signature, 'confirmed');
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error('Transaction confirmation timeout')),
+        botConfig.monitoring.confirmationTimeout,
+      ),
     );
 
-    if (confirmation.value.err) {
-      throw new Error(
-        `Transaction confirmed but failed: ${JSON.stringify(confirmation.value.err)}`,
-      );
-    }
+    await Promise.race([confirmationPromise, timeoutPromise]);
 
+    logger.info(`Token created successfully! Signature: ${signature}`);
+    logger.info(`Token address: ${mint.publicKey.toBase58()}`);
+    logger.info(`Pump.fun URL: https://pump.fun/${mint.publicKey.toBase58()}`);
     return signature;
-  } catch (error) {
-    logger.error('Error creating token:', error);
-
-    // Try to get more detailed error information
-    if (error instanceof Error) {
-      logger.error(`Error details: ${error.message}`);
-
-      // If it's a specific Solana error, try to provide more context
-      if (error.message.includes('ProgramFailedToComplete')) {
-        logger.error(
-          'This error typically occurs when the program runs out of compute units or encounters an unexpected condition.',
-        );
-        logger.error(
-          'Try increasing the compute budget or check if the PumpFun program has been updated.',
-        );
-      } else if (error.message.includes('Transaction simulation failed')) {
-        logger.error(
-          'Transaction simulation failed. This could be due to insufficient funds or program constraints.',
-        );
-      }
-    }
-
-    throw error;
-  }
+  }, 'Token creation');
 }
 
 /**
- * Buys tokens from PumpFun
+ * Buys tokens using the official SDK
  */
 export async function buyTokens(
   connection: Connection,
   buyer: Keypair,
-  mintAddress: PublicKey,
+  mintAddress: string,
   solAmount: number,
 ): Promise<string> {
-  logger.info(`Buying tokens for mint ${logger.formatToken(mintAddress)} with ${solAmount} SOL...`);
+  return withTransactionRetry(async () => {
+    logger.info(`Buying ${solAmount} SOL worth of tokens for mint: ${mintAddress}`);
 
-  // Get the bonding curve PDA
-  const bondingCurve = getBondingCurvePDA(mintAddress);
+    // Validate inputs
+    if (solAmount <= 0) {
+      throw new Error('SOL amount must be positive');
+    }
 
-  // Get the associated token account for the buyer
-  const buyerAta = await getAssociatedTokenAddress(mintAddress, buyer.publicKey, false);
+    if (solAmount < botConfig.trading.minSolAmount) {
+      throw new Error(`SOL amount must be at least ${botConfig.trading.minSolAmount}`);
+    }
 
-  // Get the associated token account for the bonding curve
-  const bondingCurveAta = await getAssociatedTokenAddress(mintAddress, bondingCurve, true);
+    // Create SDK instance
+    const sdk = new PumpSdk(connection, PUMP_PROGRAM_ID);
+    const mint = new PublicKey(mintAddress);
 
-  // Calculate buy amount with slippage
-  const buyAmountSol = BigInt(Math.floor(solAmount * LAMPORTS_PER_SOL));
-  const slippageBasisPoints = BigInt(DEFAULT_SLIPPAGE_BASIS_POINTS);
-  // Add slippage to the buy amount (e.g., 5% more SOL)
-  const maxSolCost = buyAmountSol + (buyAmountSol * slippageBasisPoints) / BigInt(10000);
+    // Get global state and bonding curve
+    const [global, bondingCurve] = await Promise.all([
+      sdk.fetchGlobal(),
+      sdk.fetchBondingCurve(mint),
+    ]);
 
-  // Create compute budget instruction
-  const computeBudgetIx = ComputeBudgetProgram.setComputeUnitLimit({
-    units: 200000, // Reduce from 1,000,000 to 200,000 units
-  });
+    // Get bonding curve account info
+    const bondingCurveAccountInfo = await connection.getAccountInfo(sdk.bondingCurvePda(mint));
 
-  const computePriceIx = ComputeBudgetProgram.setComputeUnitPrice({
-    microLamports: 20000, // 0.00002 SOL per 1 million compute units
-  });
+    if (!bondingCurveAccountInfo) {
+      throw new Error('Bonding curve account not found');
+    }
 
-  // Create a new transaction
-  const transaction = new Transaction();
-
-  // Add compute budget instruction
-  transaction.add(computeBudgetIx);
-  transaction.add(computePriceIx);
-
-  // Add instruction to create token account if it doesn't exist
-  try {
-    await connection.getAccountInfo(buyerAta);
-  } catch (e) {
-    transaction.add(
-      createAssociatedTokenAccountInstruction(
-        buyer.publicKey,
-        buyerAta,
-        buyer.publicKey,
-        mintAddress,
-      ),
+    // Calculate token amount from SOL amount
+    const buyAmountSol = new BN(Math.floor(solAmount * LAMPORTS_PER_SOL));
+    const tokenAmount = getBuyTokenAmountFromSolAmount(
+      global,
+      bondingCurve,
+      buyAmountSol,
+      false, // newCoin = false for existing tokens
     );
-  }
 
-  // Create instruction data with proper arguments
-  const discriminator = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
+    logger.info(`Calculated token amount: ${tokenAmount.toString()} tokens`);
 
-  // Serialize the amount and maxSolCost as u64 values
-  const amountBuffer = Buffer.alloc(8);
-  const maxSolCostBuffer = Buffer.alloc(8);
+    // Create transaction
+    const transaction = new Transaction();
 
-  // Write the values as little-endian
-  amountBuffer.writeBigUInt64LE(buyAmountSol);
-  maxSolCostBuffer.writeBigUInt64LE(maxSolCost);
+    // Add a small buffer to the slippage for precision issues
+    const slippage = Math.max(
+      botConfig.trading.slippageBasisPoints / 10000,
+      0.01, // Minimum 1% slippage
+    );
 
-  // Construct the data buffer
-  const data = Buffer.concat([discriminator, amountBuffer, maxSolCostBuffer]);
+    // Reduce token amount slightly to account for slippage precision
+    const adjustedTokenAmount = tokenAmount.mul(new BN(99)).div(new BN(100)); // 1% buffer
 
-  // Create buy instruction
-  const buyIx = new TransactionInstruction({
-    programId: PUMP_FUN_PROGRAM,
-    keys: [
-      { pubkey: GLOBAL, isSigner: false, isWritable: false },
-      { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
-      { pubkey: mintAddress, isSigner: false, isWritable: false },
-      { pubkey: bondingCurve, isSigner: false, isWritable: true },
-      { pubkey: bondingCurveAta, isSigner: false, isWritable: true },
-      { pubkey: buyerAta, isSigner: false, isWritable: true },
-      { pubkey: buyer.publicKey, isSigner: true, isWritable: true },
-      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: RENT, isSigner: false, isWritable: false },
-      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },
-      { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
-    ],
-    data: data,
-  });
+    // Add buy instructions
+    const buyInstructions = await sdk.buyInstructions(
+      global,
+      bondingCurveAccountInfo,
+      bondingCurve,
+      mint,
+      buyer.publicKey,
+      adjustedTokenAmount, // adjusted token amount
+      buyAmountSol, // SOL amount
+      slippage,
+      bondingCurve.creator, // coin creator
+    );
 
-  transaction.add(buyIx);
+    transaction.add(...buyInstructions);
 
-  try {
     // Sign and send transaction
     transaction.feePayer = buyer.publicKey;
-    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-    // Sign the transaction
+    const { blockhash } = await connection.getLatestBlockhash();
+    transaction.recentBlockhash = blockhash;
     transaction.sign(buyer);
 
-    // Send transaction
     const signature = await connection.sendRawTransaction(transaction.serialize(), {
-      skipPreflight: true, // Skip preflight to avoid simulation errors
+      skipPreflight: false,
       preflightCommitment: 'confirmed',
-      maxRetries: 3,
     });
 
-    await connection.confirmTransaction(signature, 'confirmed');
+    // Wait for confirmation with timeout
+    const confirmationPromise = connection.confirmTransaction(signature, 'confirmed');
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error('Transaction confirmation timeout')),
+        botConfig.monitoring.confirmationTimeout,
+      ),
+    );
+
+    await Promise.race([confirmationPromise, timeoutPromise]);
+
+    logger.info(`Buy successful! Signature: ${signature}`);
     return signature;
-  } catch (error) {
-    logger.error('Error buying tokens:', error);
-    throw error;
-  }
+  }, 'Token purchase');
 }
 
 /**
- * Sells tokens on PumpFun
+ * Sells tokens using the official SDK
  */
 export async function sellTokens(
   connection: Connection,
-  payer: Keypair,
-  mintAddress: PublicKey,
+  seller: Keypair,
+  mintAddress: string,
+  tokenAmount: number,
 ): Promise<string> {
-  logger.info(`Selling tokens for mint ${logger.formatToken(mintAddress)}...`);
+  return withTransactionRetry(async () => {
+    logger.info(`Selling ${tokenAmount} tokens for mint: ${mintAddress}`);
 
-  // Get the bonding curve PDA
-  const bondingCurve = getBondingCurvePDA(mintAddress);
+    // Validate inputs
+    if (tokenAmount <= 0) {
+      throw new Error('Token amount must be positive');
+    }
 
-  // Get the associated token account for the payer
-  const payerAta = await getAssociatedTokenAddress(mintAddress, payer.publicKey, false);
+    // Create SDK instance
+    const sdk = new PumpSdk(connection, PUMP_PROGRAM_ID);
+    const mint = new PublicKey(mintAddress);
 
-  // Get the associated token account for the bonding curve
-  const bondingCurveAta = await getAssociatedTokenAddress(mintAddress, bondingCurve, true);
+    // Get global state and bonding curve
+    const [global, bondingCurve] = await Promise.all([
+      sdk.fetchGlobal(),
+      sdk.fetchBondingCurve(mint),
+    ]);
 
-  // Check if the payer has a token account
-  const tokenAccountInfo = await connection.getAccountInfo(payerAta);
-  if (!tokenAccountInfo) {
-    logger.warning('No token account found for the payer. Creating a buy transaction instead...');
-    // If we don't have a token account, we can't sell. Let's buy some tokens instead.
-    return buyTokens(connection, payer, mintAddress, 0.05); // Buy a small amount
-  }
+    // Get bonding curve account info
+    const bondingCurveAccountInfo = await connection.getAccountInfo(sdk.bondingCurvePda(mint));
 
-  // Get token balance
-  const tokenBalance = await connection.getTokenAccountBalance(payerAta);
-  const amount = BigInt(tokenBalance.value.amount);
+    if (!bondingCurveAccountInfo) {
+      throw new Error('Bonding curve account not found');
+    }
 
-  if (amount <= 0) {
-    logger.warning('No tokens to sell. Creating a buy transaction instead...');
-    // If we don't have any tokens, we can't sell. Let's buy some tokens instead.
-    return buyTokens(connection, payer, mintAddress, 0.05); // Buy a small amount
-  }
+    // Create transaction
+    const transaction = new Transaction();
 
-  // Calculate minimum SOL output with slippage
-  const slippageBasisPoints = BigInt(DEFAULT_SLIPPAGE_BASIS_POINTS);
-  // Subtract slippage from the minimum SOL output (e.g., 5% less SOL)
-  const minSolOutput = BigInt(1); // Using a small value for simplicity
+    // Convert token amount to base units
+    const sellAmount = new BN(Math.floor(tokenAmount * Math.pow(10, DEFAULT_DECIMALS)));
+    const slippage = botConfig.trading.slippageBasisPoints / 10000; // Convert basis points to decimal
 
-  // Create compute budget instruction
-  const computeBudgetIx = ComputeBudgetProgram.setComputeUnitLimit({
-    units: 200000, // Reduce from 1,000,000 to 200,000 units
-  });
+    // Add sell instructions
+    const sellInstructions = await sdk.sellInstructions(
+      global,
+      bondingCurveAccountInfo,
+      mint,
+      seller.publicKey,
+      sellAmount, // token amount
+      new BN(0), // SOL amount (calculated by the SDK)
+      slippage,
+    );
 
-  const computePriceIx = ComputeBudgetProgram.setComputeUnitPrice({
-    microLamports: 20000, // 0.00002 SOL per 1 million compute units
-  });
+    transaction.add(...sellInstructions);
 
-  // Create a new transaction
-  const transaction = new Transaction();
-
-  // Add compute budget instruction
-  transaction.add(computeBudgetIx);
-  transaction.add(computePriceIx);
-
-  // Create instruction data with proper arguments
-  const discriminator = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
-
-  // Serialize the amount and minSolOutput as u64 values
-  const amountBuffer = Buffer.alloc(8);
-  const minSolOutputBuffer = Buffer.alloc(8);
-
-  // Write the values as little-endian
-  amountBuffer.writeBigUInt64LE(amount);
-  minSolOutputBuffer.writeBigUInt64LE(minSolOutput);
-
-  // Construct the data buffer
-  const data = Buffer.concat([discriminator, amountBuffer, minSolOutputBuffer]);
-
-  // Create sell instruction
-  const sellIx = new TransactionInstruction({
-    programId: PUMP_FUN_PROGRAM,
-    keys: [
-      { pubkey: GLOBAL, isSigner: false, isWritable: false },
-      { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
-      { pubkey: mintAddress, isSigner: false, isWritable: false },
-      { pubkey: bondingCurve, isSigner: false, isWritable: true },
-      { pubkey: bondingCurveAta, isSigner: false, isWritable: true },
-      { pubkey: payerAta, isSigner: false, isWritable: true },
-      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
-      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
-      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },
-      { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
-    ],
-    data: data,
-  });
-
-  transaction.add(sellIx);
-
-  try {
     // Sign and send transaction
-    transaction.feePayer = payer.publicKey;
-    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+    transaction.feePayer = seller.publicKey;
+    const { blockhash } = await connection.getLatestBlockhash();
+    transaction.recentBlockhash = blockhash;
+    transaction.sign(seller);
 
-    // Sign the transaction
-    transaction.sign(payer);
-
-    // Send transaction
     const signature = await connection.sendRawTransaction(transaction.serialize(), {
-      skipPreflight: true, // Skip preflight to avoid simulation errors
+      skipPreflight: false,
       preflightCommitment: 'confirmed',
-      maxRetries: 3,
     });
 
-    await connection.confirmTransaction(signature, 'confirmed');
+    // Wait for confirmation with timeout
+    const confirmationPromise = connection.confirmTransaction(signature, 'confirmed');
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error('Transaction confirmation timeout')),
+        botConfig.monitoring.confirmationTimeout,
+      ),
+    );
+
+    await Promise.race([confirmationPromise, timeoutPromise]);
+
+    logger.info(`Sell successful! Signature: ${signature}`);
     return signature;
+  }, 'Token sale');
+}
+
+/**
+ * Gets bonding curve account information with error handling
+ */
+export async function getBondingCurveAccount(
+  connection: Connection,
+  mintAddress: string,
+): Promise<any> {
+  try {
+    const sdk = new PumpSdk(connection, PUMP_PROGRAM_ID);
+    const mint = new PublicKey(mintAddress);
+    const bondingCurve = await sdk.fetchBondingCurve(mint);
+    return bondingCurve;
   } catch (error) {
-    logger.error('Error selling tokens:', error);
-    throw error;
+    logger.error('Error getting bonding curve account:', error);
+    return null;
   }
 }
 
 /**
- * Helper function to get the bonding curve PDA
+ * Gets global account information with error handling
  */
-function getBondingCurvePDA(mint: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('bonding-curve'), mint.toBuffer()],
-    PUMP_FUN_PROGRAM,
-  )[0];
+export async function getGlobalAccount(connection: Connection): Promise<any> {
+  try {
+    const sdk = new PumpSdk(connection, PUMP_PROGRAM_ID);
+    const globalAccount = await sdk.fetchGlobal();
+    return globalAccount;
+  } catch (error) {
+    logger.error('Error getting global account:', error);
+    return null;
+  }
+}
+
+/**
+ * Validates token creation parameters
+ */
+export function validateTokenParams(name: string, symbol: string, metadataUri: string): void {
+  if (!name || typeof name !== 'string') {
+    throw new Error('Token name is required and must be a string');
+  }
+
+  if (!symbol || typeof symbol !== 'string') {
+    throw new Error('Token symbol is required and must be a string');
+  }
+
+  if (!metadataUri || typeof metadataUri !== 'string') {
+    throw new Error('Metadata URI is required and must be a string');
+  }
+
+  if (name.length > 32) {
+    throw new Error('Token name must be 32 characters or less');
+  }
+
+  if (symbol.length > 10) {
+    throw new Error('Token symbol must be 10 characters or less');
+  }
+
+  if (!metadataUri.startsWith('http://') && !metadataUri.startsWith('https://')) {
+    throw new Error('Metadata URI must be a valid HTTP/HTTPS URL');
+  }
 }

@@ -1,3 +1,4 @@
+import { PUMP_PROGRAM_ID } from '@pump-fun/pump-sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import logger from '../utils/logger.js';
 
@@ -5,264 +6,209 @@ import logger from '../utils/logger.js';
  * Transaction type enum
  */
 export enum TransactionType {
-  BUY = 'buy',
+  BUY = 'BUY',
+  SELL = 'SELL',
+  UNKNOWN = 'UNKNOWN',
 }
 
 /**
  * Transaction data interface
  */
-export interface TransactionData {
-  signature: string;
+export interface TransactionEvent {
   type: TransactionType;
+  signature: string;
   buyer?: PublicKey;
   amount?: number;
   timestamp: number;
 }
 
 /**
- * Checks if a transaction is a buy transaction for the given mint
- * @param transaction Transaction data
- * @param mintAddress Mint address
- * @param walletPublicKey Our wallet public key to exclude our own transactions
- * @returns Object with isBuy flag and buyer public key if it's a buy transaction
+ * Simplified buy transaction detection
  */
-function isBuyTransaction(
-  transaction: any,
-  mintAddress: PublicKey,
-  walletPublicKey?: PublicKey,
-): { isBuy: boolean; buyer?: PublicKey } {
+function isBuyTransaction(transaction: any, mintAddress: PublicKey): boolean {
   try {
-    if (!transaction || !transaction.transaction) {
-      return { isBuy: false };
+    // Skip if no transaction data
+    if (!transaction?.meta || transaction.meta.err) {
+      return false;
     }
 
-    // Get all accounts involved in the transaction
-    const accountKeys = transaction.transaction.message.getAccountKeys().keySegments().flat();
+    // Check if transaction involves pump program
+    const programIds = transaction.transaction.message.instructions
+      ?.map((ix: any) => {
+        try {
+          if (transaction.transaction.message.version === 'legacy') {
+            return transaction.transaction.message.accountKeys[ix.programIdIndex];
+          } else {
+            // For versioned transactions, just check if pump program is mentioned
+            const allKeys = [
+              ...transaction.transaction.message.accountKeys,
+              ...(transaction.meta.loadedAddresses?.readonly || []),
+              ...(transaction.meta.loadedAddresses?.writable || []),
+            ];
+            return allKeys[ix.programIdIndex];
+          }
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
 
-    // Check if the mint is involved in the transaction
-    const mintInvolved = accountKeys.some((key: PublicKey) => key.equals(mintAddress));
-    if (!mintInvolved) {
-      return { isBuy: false };
+    const involvesPumpProgram = programIds?.some((id: string) => id === PUMP_PROGRAM_ID.toBase58());
+
+    if (!involvesPumpProgram) {
+      return false;
     }
 
-    // Get the first account (usually the buyer/signer)
-    const buyer = accountKeys[0];
+    // Check if mint is involved
+    const allAccountKeys = [
+      ...transaction.transaction.message.accountKeys,
+      ...(transaction.meta.loadedAddresses?.readonly || []),
+      ...(transaction.meta.loadedAddresses?.writable || []),
+    ];
 
-    // Skip our own transactions
-    if (walletPublicKey && buyer.equals(walletPublicKey)) {
-      return { isBuy: false };
+    const involvesMint = allAccountKeys.some((key: string) => key === mintAddress.toBase58());
+
+    if (!involvesMint) {
+      return false;
     }
 
-    // Check if the transaction has instructions
-    if (
-      !transaction.transaction.message.instructions ||
-      transaction.transaction.message.instructions.length === 0
-    ) {
-      return { isBuy: false };
-    }
+    // Check for positive token balance changes (indicating a buy)
+    const tokenBalanceChanges = transaction.meta.postTokenBalances || [];
+    const preTokenBalances = transaction.meta.preTokenBalances || [];
 
-    // For PumpFun transactions, we can check for the buy instruction discriminator
-    // The buy discriminator is [102, 6, 61, 18, 1, 218, 235, 234]
-    const buyDiscriminator = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
+    for (const postBalance of tokenBalanceChanges) {
+      if (postBalance.mint === mintAddress.toBase58()) {
+        const preBalance = preTokenBalances.find(
+          (pre: any) => pre.accountIndex === postBalance.accountIndex,
+        );
 
-    // Check if any instruction has the buy discriminator
-    for (const ix of transaction.transaction.message.instructions) {
-      if (!ix.data) continue;
+        const preAmount = preBalance
+          ? parseFloat(preBalance.uiTokenAmount.uiAmountString || '0')
+          : 0;
+        const postAmount = parseFloat(postBalance.uiTokenAmount.uiAmountString || '0');
 
-      const data = Buffer.from(ix.data, 'base64');
-      if (data.length >= 8 && data.slice(0, 8).equals(buyDiscriminator)) {
-        return { isBuy: true, buyer };
+        // If token balance increased, it's likely a buy
+        if (postAmount > preAmount) {
+          return true;
+        }
       }
     }
 
-    // If we couldn't definitively identify a buy transaction but the mint is involved,
-    // we'll assume it's a buy transaction for now (can be refined later)
-    return { isBuy: true, buyer };
+    return false;
   } catch (error) {
-    logger.error('Error checking if transaction is a buy:', error);
-    return { isBuy: false };
+    logger.debug('Error checking transaction:', error);
+    return false;
   }
 }
 
 /**
- * Improved websocket-based transaction monitoring
- * @param connection Solana connection
- * @param mintAddress Mint address of the token to monitor
- * @param callback Callback function to execute when a transaction is detected
- * @param walletPublicKey Our wallet public key to exclude our own transactions
- * @returns Cleanup function to stop monitoring
+ * Gets the buyer from a transaction
+ */
+function getBuyerFromTransaction(transaction: any): PublicKey | undefined {
+  try {
+    // The first account is usually the buyer/signer
+    const firstAccount = transaction.transaction.message.accountKeys[0];
+    return firstAccount ? new PublicKey(firstAccount) : undefined;
+  } catch (error) {
+    logger.debug('Error getting buyer from transaction:', error);
+    return undefined;
+  }
+}
+
+/**
+ * Monitors transactions for a specific token mint using WebSocket
  */
 export function monitorTokenTransactionsWebsocket(
   connection: Connection,
   mintAddress: PublicKey,
-  callback: (transaction: TransactionData) => void,
-  walletPublicKey?: PublicKey,
+  onTransaction: (transaction: TransactionEvent) => void,
+  excludeWallet?: PublicKey,
 ): () => void {
   logger.info(`Starting to monitor transactions for mint ${logger.formatToken(mintAddress)}...`);
 
-  // Track processed signatures to avoid duplicates
-  const processedSignatures = new Set<string>();
-
-  // Track if monitoring is active
-  let isMonitoringActive = true;
-
-  // Subscribe to account changes
-  const subscriptionId = connection.onAccountChange(
-    mintAddress,
-    async (accountInfo, context) => {
-      // Skip if monitoring has been stopped
-      if (!isMonitoringActive) return;
-
-      // Only log at debug level to reduce noise
-      logger.debug(`Account change detected for ${mintAddress.toString()} at slot ${context.slot}`);
-
-      try {
-        // Get recent signatures for the mint
-        const signatures = await connection.getSignaturesForAddress(mintAddress, {
-          limit: 10,
-        });
-
-        if (signatures.length === 0) {
-          return;
-        }
-
-        // Process each signature that we haven't seen before
-        for (const sigInfo of signatures) {
-          // Skip if monitoring has been stopped during processing
-          if (!isMonitoringActive) return;
-
-          if (processedSignatures.has(sigInfo.signature)) {
-            continue;
-          }
-
-          // Mark as processed immediately to avoid race conditions
-          processedSignatures.add(sigInfo.signature);
-
-          // Get transaction details
-          const transaction = await connection.getTransaction(sigInfo.signature, {
-            maxSupportedTransactionVersion: 0,
-          });
-
-          if (!transaction) {
-            continue;
-          }
-
-          // Check if this is a buy transaction
-          const { isBuy, buyer } = isBuyTransaction(transaction, mintAddress, walletPublicKey);
-
-          if (isBuy && buyer) {
-            // Log at debug level only to reduce noise
-            logger.debug(`Buy transaction detected: ${sigInfo.signature}`);
-
-            // Process the transaction
-            callback({
-              signature: sigInfo.signature,
-              type: TransactionType.BUY,
-              buyer,
-              amount: undefined,
-              timestamp: transaction.blockTime || Date.now() / 1000,
-            });
-          }
-        }
-      } catch (error) {
-        logger.error('Error processing transaction from websocket:', error);
-      }
-    },
-    'confirmed',
-  );
-
-  // Initial check timeout ID for cleanup
-  let initialCheckTimeoutId: NodeJS.Timeout | null = null;
-
-  // Do an initial check for transactions that might have happened right after token creation
-  initialCheckTimeoutId = setTimeout(async () => {
-    // Skip if monitoring has been stopped
-    if (!isMonitoringActive) return;
-
+  // Check recent transactions first
+  const checkRecentTransactions = async () => {
     try {
-      // Get recent signatures for the mint
       const signatures = await connection.getSignaturesForAddress(mintAddress, {
         limit: 10,
       });
 
-      if (signatures.length === 0) {
-        return;
-      }
-
-      // Process each signature that we haven't seen before
       for (const sigInfo of signatures) {
-        // Skip if monitoring has been stopped during processing
-        if (!isMonitoringActive) return;
-
-        if (processedSignatures.has(sigInfo.signature)) {
-          continue;
-        }
-
-        // Mark as processed immediately to avoid race conditions
-        processedSignatures.add(sigInfo.signature);
-
-        // Get transaction details
-        const transaction = await connection.getTransaction(sigInfo.signature, {
-          maxSupportedTransactionVersion: 0,
-        });
-
-        if (!transaction) {
-          continue;
-        }
-
-        // Check if this is a buy transaction
-        const { isBuy, buyer } = isBuyTransaction(transaction, mintAddress, walletPublicKey);
-
-        if (isBuy && buyer) {
-          // Log at debug level only to reduce noise
-          logger.debug(`Buy transaction detected during initial check: ${sigInfo.signature}`);
-
-          // Process the transaction
-          callback({
-            signature: sigInfo.signature,
-            type: TransactionType.BUY,
-            buyer,
-            amount: undefined,
-            timestamp: transaction.blockTime || Date.now() / 1000,
+        try {
+          const transaction = await connection.getParsedTransaction(sigInfo.signature, {
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0,
           });
+
+          if (transaction && isBuyTransaction(transaction, mintAddress)) {
+            const buyer = getBuyerFromTransaction(transaction);
+
+            // Skip our own transactions
+            if (excludeWallet && buyer?.equals(excludeWallet)) {
+              continue;
+            }
+
+            logger.debug(`Buy transaction detected during initial check: ${sigInfo.signature}`);
+
+            onTransaction({
+              type: TransactionType.BUY,
+              signature: sigInfo.signature,
+              buyer,
+              timestamp: sigInfo.blockTime || Date.now() / 1000,
+            });
+          }
+        } catch (error) {
+          logger.debug(`Error processing transaction ${sigInfo.signature}:`, error);
         }
       }
     } catch (error) {
-      logger.error('Error during initial transaction check:', error);
+      logger.warning('Error checking recent transactions:', error);
     }
+  };
 
-    // Clear the timeout ID after execution
-    initialCheckTimeoutId = null;
-  }, 500);
+  // Check recent transactions immediately
+  checkRecentTransactions();
 
-  // Return a cleanup function
+  // Set up WebSocket monitoring for new transactions
+  const subscriptionId = connection.onLogs(
+    mintAddress,
+    (logs, context) => {
+      // Process new transactions
+      setTimeout(async () => {
+        try {
+          const transaction = await connection.getParsedTransaction(logs.signature, {
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0,
+          });
+
+          if (transaction && isBuyTransaction(transaction, mintAddress)) {
+            const buyer = getBuyerFromTransaction(transaction);
+
+            // Skip our own transactions
+            if (excludeWallet && buyer?.equals(excludeWallet)) {
+              return;
+            }
+
+            logger.debug(`Buy transaction detected via WebSocket: ${logs.signature}`);
+
+            onTransaction({
+              type: TransactionType.BUY,
+              signature: logs.signature,
+              buyer,
+              timestamp: Date.now() / 1000,
+            });
+          }
+        } catch (error) {
+          logger.debug(`Error processing WebSocket transaction ${logs.signature}:`, error);
+        }
+      }, 100); // Small delay to ensure transaction is available
+    },
+    'confirmed',
+  );
+
+  // Return cleanup function
   return () => {
-    // Prevent multiple calls to the cleanup function
-    if (!isMonitoringActive) return;
-
-    // Simplified logging message
-    logger.info(`Stopping transaction monitoring...`);
-
-    // Mark monitoring as inactive
-    isMonitoringActive = false;
-
-    // Remove the account change listener
-    try {
-      connection.removeAccountChangeListener(subscriptionId);
-    } catch (error: any) {
-      // Don't log errors about already removed listeners to reduce noise
-      if (!error.toString().includes('Ignored unsubscribe request')) {
-        logger.error('Error removing account change listener:', error);
-      }
-    }
-
-    // Clear the initial check timeout if it's still pending
-    if (initialCheckTimeoutId) {
-      clearTimeout(initialCheckTimeoutId);
-      initialCheckTimeoutId = null;
-    }
-
-    // Clear the processed signatures set
-    processedSignatures.clear();
+    logger.info('Stopping transaction monitoring...');
+    connection.removeOnLogsListener(subscriptionId);
   };
 }

@@ -1,145 +1,234 @@
 # PumpFun Bot
 
-An automated token creation and sniping bot for Solana using Pump.fun. It creates tokens, detects sniper buys, and sells into them — making profit off the snipers, not regular traders.
+An automated trading bot for creating and trading tokens on pump.fun. The bot creates tokens, monitors for external purchases, and automatically sells for profit.
 
 ## Features
 
-- Generates token metadata using Claude API
-- Creates images using Replicate API
-- Uploads metadata and images to IPFS using Pinata
-- Creates tokens on PumpFun
-- Buys a portion of the supply during token creation
-- Monitors transactions and sells tokens based on conditions
-- Creates a new wallet for each run
-- Transfers funds between wallets
-- Saves wallets in JSON format with base58-encoded keys for compatibility
-- Tracks performance and profit/loss metrics
-
-## TODO
-
-- [ ] Implement news event monitoring system to automatically detect trending topics
-- [ ] Create tokens based on real-time news events and market trends
-- [ ] Add sentiment analysis to evaluate potential token popularity
-- [ ] Develop automated deployment triggers based on news relevance scores
+- **Automated Token Creation**: Uses OpenAI to generate token metadata and images
+- **Smart Trading**: Monitors for external purchases and sells automatically
+- **Profit Tracking**: Comprehensive profit/loss tracking across trading cycles
+- **Robust Error Handling**: Retry mechanisms and graceful degradation
+- **Production Ready**: TypeScript, proper logging, configuration management
+- **Official SDK**: Uses the official pump.fun SDK for reliability
 
 ## Prerequisites
 
-- Node.js v18.12 or higher
-- pnpm (preferred package manager)
-- API keys for:
-  - Claude AI (for token metadata generation)
-  - Replicate (for image generation)
-  - Pinata (for IPFS storage)
-  - Helius (for Solana RPC access)
+- Node.js 18+ and pnpm
+- Helius API key (for Solana RPC)
+- Pinata JWT and Gateway (for IPFS uploads)
+- OpenAI API key (for metadata generation)
+- Replicate API token (for image generation)
+- Initial SOL funding (minimum 0.1 SOL recommended)
 
-## Project Structure
+## Installation
 
-```
-pumpfun-bot/
-├── src/                  # Source code
-│   ├── config/           # Configuration files
-│   ├── services/         # Service modules
-│   ├── utils/            # Utility functions
-│   └── index.ts          # Main entry point
-├── dist/                 # Compiled JavaScript output
-├── wallets/              # Generated wallet files (gitignored)
-├── pnl/                  # Profit and loss tracking
-├── temp/                 # Temporary files
-├── .env                  # Environment variables (gitignored)
-├── .env.example          # Example environment variables
-├── package.json          # Project dependencies and scripts
-└── tsconfig.json         # TypeScript configuration
+1. Clone the repository:
+
+```bash
+git clone <repository-url>
+cd pumpfun-bot
 ```
 
-## Setup
-
-1. Clone the repository
 2. Install dependencies:
-   ```
-   pnpm install
-   ```
-3. Create a `.env` file with your API keys (see `.env.example`):
-   ```
-   REPLICATE_API_TOKEN=your_replicate_api_token
-   HELIUS_API_KEY=your_helius_api_key
-   CLAUDE_API_KEY=your_claude_api_key
-   PINATA_JWT=your_pinata_jwt
-   PINATA_GATEWAY=your_pinata_gateway
-   ```
+
+```bash
+pnpm install
+```
+
+3. Set up environment variables:
+
+```bash
+cp env.example .env
+# Edit .env with your API keys
+```
+
 4. Build the project:
-   ```
-   pnpm run build
-   ```
 
-## Usage
-
-Start the bot in development mode:
-
+```bash
+pnpm build
 ```
-pnpm run dev
-```
-
-Or build and start in production mode:
-
-```
-pnpm run build
-pnpm start
-```
-
-The bot will:
-
-1. Create a new wallet
-2. Generate token metadata and image
-3. Upload to IPFS
-4. Create a token on PumpFun
-5. Buy a portion of the supply
-6. Monitor transactions
-7. Sell tokens based on conditions
-8. Transfer funds to a new wallet and repeat
-9. Track performance metrics
-
-## Available Scripts
-
-- `pnpm run build` - Compile TypeScript to JavaScript
-- `pnpm start` - Run the compiled JavaScript
-- `pnpm run dev` - Run the bot in development mode using tsx
-- `pnpm run lint` - Run ESLint to check code quality
 
 ## Configuration
 
-Edit the `.env` file to customize:
+Configure the bot by editing your `.env` file:
 
-- API keys (required)
-- Other configuration parameters
+### Required Environment Variables
 
-## Security
+- `HELIUS_API_KEY`: Your Helius RPC API key
+- `PINATA_JWT`: Your Pinata JWT token for IPFS uploads
+- `PINATA_GATEWAY`: Your Pinata gateway URL
+- `OPENAI_API_KEY`: Your OpenAI API key for metadata generation
+- `REPLICATE_API_TOKEN`: Your Replicate API token for image generation
 
-Wallet private keys are stored locally in the `wallets` directory as JSON files containing:
+### Trading Configuration
 
-- The public key as a string
-- The secret key as an array of numbers
-- The secret key as a base58-encoded string for easy import into other Solana tools
+The bot uses a percentage-based approach for token purchases:
 
-These files are excluded from git by default via the `.gitignore` file.
+- **Buy Amount**: Uses 70-80% of current wallet balance (randomized)
+- **Maximum Cap**: 2 SOL per trade
+- **Dynamic Scaling**: Automatically adjusts to available funds
 
-## Performance Tracking
+Optional environment variables:
 
-The bot tracks performance metrics in the `pnl` directory, allowing you to monitor:
+- `SLIPPAGE_BASIS_POINTS`: Maximum slippage in basis points (default: 500 = 5%)
+- `SELL_TIMEOUT_SECONDS`: Time to wait before selling if no one buys (default: 20)
+- `TRANSACTION_FEE_BUFFER`: Extra SOL to keep for transaction fees (default: 0.01)
 
-- Token creation success rate
-- Trading performance
-- Profit and loss metrics
+### Monitoring Configuration
 
-## Version Control
+- `MAX_TRANSACTION_AGE_SECONDS`: Maximum age of transactions to process (default: 30)
+- `CONFIRMATION_TIMEOUT_MS`: Timeout for transaction confirmations (default: 30000)
+- `RETRY_ATTEMPTS`: Number of retry attempts for failed operations (default: 3)
+- `RETRY_DELAY_MS`: Base delay between retries in milliseconds (default: 1000)
 
-The project's `.gitignore` file excludes sensitive and unnecessary files:
+## Usage
 
-- Environment variables (`.env`)
-- Wallet files (`wallets/`)
-- Dependencies (`node_modules/`)
-- Build output (`dist/`)
-- Temporary files (`temp/`)
+### Running the Bot
+
+Start the bot in production mode:
+
+```bash
+pnpm start
+```
+
+For development with auto-restart:
+
+```bash
+pnpm dev
+```
+
+### Initial Setup
+
+1. **Fund Your Wallet**: The bot will create a new wallet on first run. Fund it with at least 0.1 SOL to get started.
+
+2. **Monitor Logs**: The bot provides detailed logging of all operations, including profit/loss tracking.
+
+3. **Profit Tracking**: Profit data is automatically saved to `./pnl/profit_log.json`
+
+### Bot Behavior
+
+1. **Token Creation**: Creates a new token with AI-generated metadata and image
+2. **Initial Purchase**: Buys a random amount of the created token (between MIN/MAX SOL)
+3. **Monitoring**: Watches for external purchases using WebSocket monitoring
+4. **Auto-Sell**: Sells all tokens when someone else buys, or after timeout
+5. **Profit Calculation**: Calculates and logs profit/loss for each cycle
+6. **Repeat**: Automatically starts a new cycle with a fresh wallet
+
+## Architecture
+
+The bot is built with a clean, modular architecture:
+
+```
+src/
+├── config/          # Configuration management
+├── services/        # Core business logic
+│   ├── botManager.ts      # Main bot orchestration
+│   ├── tokenService.ts    # Token creation/trading
+│   ├── metadataGenerator.ts # AI-powered metadata generation
+│   └── transactionMonitor.ts # Real-time transaction monitoring
+├── types/           # TypeScript interfaces
+├── utils/           # Utilities (logging, retry, wallet)
+└── index.ts         # Application entry point
+```
+
+### Key Components
+
+- **BotManager**: Orchestrates the entire trading cycle and manages state
+- **TokenService**: Handles token creation, buying, and selling using official SDK
+- **TransactionMonitor**: Real-time monitoring of blockchain transactions
+- **RetryUtils**: Robust error handling with exponential backoff
+- **Configuration**: Environment-based configuration with validation
+
+## Safety Features
+
+- **Graceful Shutdown**: Proper cleanup on process termination
+- **Error Recovery**: Automatic retry with exponential backoff
+- **Wallet Management**: Secure wallet creation and fund transfers
+- **Transaction Validation**: Input validation and error checking
+- **Rate Limiting**: Built-in delays and retry limits
+
+## Monitoring and Logging
+
+The bot provides comprehensive logging:
+
+- **Cycle Tracking**: Each trading cycle is numbered and tracked
+- **Profit/Loss**: Detailed P&L reporting with percentages
+- **Transaction Details**: Full transaction signatures and amounts
+- **Error Reporting**: Detailed error messages and stack traces
+- **State Changes**: Real-time bot state monitoring
+
+### Log Levels
+
+- `INFO`: General operational information
+- `SUCCESS`: Successful operations (profits, completions)
+- `WARNING`: Non-critical issues
+- `ERROR`: Critical errors requiring attention
+- `DEBUG`: Detailed debugging information
+
+## Profit Tracking
+
+Profit data is automatically tracked and stored:
+
+```json
+{
+  "totalProfit": 0.045,
+  "cycles": [
+    {
+      "cycleId": 1,
+      "profit": 0.045,
+      "tokenAddress": "...",
+      "timestamp": "2024-01-01T00:00:00.000Z",
+      "initialBalance": 1.0,
+      "finalBalance": 1.045
+    }
+  ]
+}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Missing required environment variables"**
+
+   - Ensure all required API keys are set in `.env`
+
+2. **"Insufficient balance"**
+
+   - Fund your wallet with at least 0.1 SOL
+
+3. **"Network connection issue"**
+
+   - Check your internet connection and Helius API key
+
+4. **"Token creation failed"**
+   - Verify OpenAI and Pinata API keys are valid
+
+### Performance Optimization
+
+- Use a dedicated Helius endpoint for better performance
+- Monitor RPC rate limits
+- Adjust retry settings based on network conditions
+
+## Security Considerations
+
+- **Private Keys**: Wallet private keys are stored locally in `./wallets/`
+- **API Keys**: Keep your `.env` file secure and never commit it
+- **Network**: Use secure RPC endpoints (HTTPS)
+- **Funds**: Only fund wallets with amounts you can afford to lose
+
+## Disclaimer
+
+This bot is for educational and research purposes. Cryptocurrency trading involves substantial risk of loss. The authors are not responsible for any financial losses incurred through the use of this software.
 
 ## License
 
-ISC
+[Add your license here]
+
+## Support
+
+For issues and questions:
+
+1. Check the troubleshooting section above
+2. Review the logs for error details
+3. Ensure all API keys and configuration are correct

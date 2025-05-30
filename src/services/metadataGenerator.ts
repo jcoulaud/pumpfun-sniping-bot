@@ -1,19 +1,19 @@
-import Anthropic from '@anthropic-ai/sdk';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import fs from 'node:fs';
 import path from 'node:path';
+import OpenAI from 'openai';
 import { PinataSDK } from 'pinata';
 import Replicate from 'replicate';
-import { MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_SYMBOL_LENGTH } from '../config/constants.js';
+import { TokenMetadata } from '../types/index.js';
 import logger from '../utils/logger.js';
 
 // Load environment variables
 dotenv.config();
 
 // Initialize API clients
-const anthropic = new Anthropic({
-  apiKey: process.env.CLAUDE_API_KEY,
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 const replicate = new Replicate({
@@ -34,32 +34,15 @@ const pinata = new PinataSDK({
   pinataGateway: process.env.PINATA_GATEWAY,
 });
 
-/**
- * Token metadata interface
- */
-export interface TokenMetadata {
-  name: string;
-  symbol: string;
-  image: string;
-  showName: boolean;
-  createdOn: string;
-  twitter?: string;
-  website?: string;
-  telegram?: string;
-}
+// Token constraints
+const MAX_TOKEN_NAME_LENGTH = 32;
+const MAX_TOKEN_SYMBOL_LENGTH = 10;
 
 /**
- * Generates token metadata using Claude API
- * @returns Generated token metadata
+ * Generates token metadata using OpenAI API
  */
-export async function generateTokenMetadata(): Promise<{
-  name: string;
-  symbol: string;
-  twitter?: string;
-  website?: string;
-  telegram?: string;
-}> {
-  logger.info('Generating token metadata with Claude API...');
+export async function generateTokenMetadata(): Promise<TokenMetadata> {
+  logger.info('Generating token metadata with OpenAI...');
 
   const prompt = `Generate a completely random and HILARIOUS concept for a meme token or absurd virtual item.
 
@@ -88,7 +71,8 @@ Choose from these absurd categories (but don't limit yourself to them):
 - Cosmic horrors but they're adorable
 
 The name should be MEMORABLE, FUNNY, and possibly make people uncomfortable (max ${MAX_TOKEN_NAME_LENGTH} characters).
-The symbol should be 2-${MAX_TOKEN_SYMBOL_LENGTH} characters, preferably something that makes you chuckle.
+DO NOT use emojis, smileys, or special unicode characters in the name or symbol.
+The symbol should be 2-${MAX_TOKEN_SYMBOL_LENGTH} characters using only letters and numbers, preferably something that makes you chuckle.
 
 Also generate:
 - Twitter/X profile URL (format: https://x.com/username)
@@ -96,8 +80,9 @@ Also generate:
 - Telegram group URL (format: https://t.me/groupname)
 
 Format your response as a JSON object with the following fields:
-- name: The ridiculous item name (max ${MAX_TOKEN_NAME_LENGTH} characters)
-- symbol: The funny symbol (max ${MAX_TOKEN_SYMBOL_LENGTH} characters)
+- name: The ridiculous item name (max ${MAX_TOKEN_NAME_LENGTH} characters) - NO EMOJIS
+- symbol: The funny symbol (max ${MAX_TOKEN_SYMBOL_LENGTH} characters) - LETTERS/NUMBERS ONLY
+- description: A brief funny description of what this token represents
 - twitter: Complete Twitter/X URL (https://x.com/username)
 - website: Complete website URL (https://www.example.com or https://example.com)
 - telegram: Complete Telegram group URL (https://t.me/groupname)
@@ -105,67 +90,43 @@ Format your response as a JSON object with the following fields:
 IMPORTANT: Each run should produce a completely different concept. Make it FUNNY, ABSURD, or WTF-worthy!`;
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-3-haiku-20240307',
-      max_tokens: 1000,
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
       messages: [{ role: 'user', content: prompt }],
+      max_tokens: 500,
+      temperature: 1.2, // High creativity
     });
 
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No content received from OpenAI');
+    }
+
     // Extract JSON from response
-    const content = response.content[0].type === 'text' ? response.content[0].text : '';
     const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```|({[\s\S]*})/);
-    if (!jsonMatch) {
-      throw new Error('Could not extract JSON from Claude response');
+    let jsonContent = jsonMatch ? jsonMatch[1] || jsonMatch[2] : content;
+
+    // Clean up the JSON content
+    jsonContent = jsonContent.trim();
+    if (!jsonContent.startsWith('{')) {
+      // Try to find JSON in the content
+      const startIndex = jsonContent.indexOf('{');
+      const endIndex = jsonContent.lastIndexOf('}');
+      if (startIndex !== -1 && endIndex !== -1) {
+        jsonContent = jsonContent.substring(startIndex, endIndex + 1);
+      }
     }
 
-    // Parse JSON content
-    const jsonContent = jsonMatch[1] || jsonMatch[2];
     const metadata = JSON.parse(jsonContent);
-
-    // Ensure URLs are complete
-    if (metadata.twitter && !metadata.twitter.startsWith('http')) {
-      metadata.twitter = `https://x.com/${metadata.twitter.replace('@', '')}`;
-    }
-
-    if (metadata.website && !metadata.website.startsWith('http')) {
-      metadata.website = `https://${metadata.website}`;
-    }
-
-    if (metadata.telegram && !metadata.telegram.startsWith('http')) {
-      metadata.telegram = `https://t.me/${metadata.telegram}`;
-    }
-
-    // Randomly decide which social media URLs to include
-    const includeSocials = {
-      twitter: Math.random() > 0.5,
-      website: Math.random() > 0.5,
-      telegram: Math.random() > 0.5,
-    };
-
-    // Randomly format website URL (with or without www)
-    if (includeSocials.website && metadata.website) {
-      // If website already has www, randomly remove it
-      if (metadata.website.includes('www.') && Math.random() > 0.5) {
-        metadata.website = metadata.website.replace('www.', '');
-      }
-      // If website doesn't have www, randomly add it
-      else if (!metadata.website.includes('www.') && Math.random() > 0.5) {
-        const urlParts = metadata.website.split('//');
-        if (urlParts.length > 1) {
-          metadata.website = `${urlParts[0]}//${urlParts[1].startsWith('www.') ? '' : 'www.'}${
-            urlParts[1]
-          }`;
-        }
-      }
-    }
 
     // Validate and trim metadata
     return {
       name: metadata.name.substring(0, MAX_TOKEN_NAME_LENGTH),
       symbol: metadata.symbol.substring(0, MAX_TOKEN_SYMBOL_LENGTH),
-      twitter: includeSocials.twitter ? metadata.twitter : undefined,
-      website: includeSocials.website ? metadata.website : undefined,
-      telegram: includeSocials.telegram ? metadata.telegram : undefined,
+      description: metadata.description || `A hilarious ${metadata.name} token`,
+      twitter: metadata.twitter,
+      website: metadata.website,
+      telegram: metadata.telegram,
     };
   } catch (error) {
     logger.error('Error generating token metadata:', error);
@@ -175,49 +136,39 @@ IMPORTANT: Each run should produce a completely different concept. Make it FUNNY
 
 /**
  * Generates an image for the token using Replicate API
- * @param tokenName The name of the token
- * @param tokenSymbol The symbol of the token
- * @returns URL of the generated image
  */
 export async function generateTokenImage(tokenName: string, tokenSymbol: string): Promise<string> {
-  logger.info('Generating token image with Replicate API...');
+  logger.info('Generating token image with Replicate...');
 
-  const prompt = `Create a HILARIOUS and ABSURD digital artwork representing "${tokenName}" (${tokenSymbol}). 
-Make it ridiculous, funny, and possibly a bit disturbing - something that would make people say "WTF?!"
-Use vibrant colors, weird visual elements, and unexpected combinations.
-The image should be eye-catching and memorable - think internet meme quality but original.
-Avoid text, words, or letters in the image.
-Create something that would make people laugh or be confused in the best possible way.`;
+  const prompt = `Professional digital artwork representing "${tokenName}".
+Create a high-quality, detailed, and visually striking image that embodies the concept of ${tokenName}.
+Style: vibrant, detailed, photorealistic quality with creative artistic flair.
+Make it eye-catching and memorable with rich colors and sharp details.
+The image should look polished and professional, not obviously AI-generated.
+Focus on excellent composition, lighting, and visual impact.
+Avoid any text, words, letters, or watermarks in the image.`;
 
   const maxRetries = 3;
   let retryCount = 0;
 
   while (retryCount < maxRetries) {
     try {
-      const output = await replicate.run(
-        'stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b',
-        {
-          input: {
-            prompt,
-            width: 512,
-            height: 512,
-            refine: 'expert_ensemble_refiner',
-            scheduler: 'K_EULER',
-            lora_scale: 0.6,
-            num_outputs: 1,
-            guidance_scale: 7.5,
-            apply_watermark: false,
-            high_noise_frac: 0.8,
-            negative_prompt:
-              'nsfw, offensive, explicit, sexual, text, words, letters, signature, watermark, cryptocurrency, crypto, coin, token, blockchain, low quality, blurry',
-            prompt_strength: 0.8,
-            num_inference_steps: 25,
-          },
+      const output = await replicate.run('black-forest-labs/flux-1.1-pro', {
+        input: {
+          prompt,
+          width: 512,
+          height: 512,
+          output_format: 'png',
+          output_quality: 95,
+          safety_tolerance: 2,
+          prompt_upsampling: true,
         },
-      );
+      });
 
       if (Array.isArray(output) && output.length > 0) {
         return output[0] as string;
+      } else if (typeof output === 'string') {
+        return output;
       } else {
         throw new Error('Failed to generate image with Replicate');
       }
@@ -231,7 +182,7 @@ Create something that would make people laugh or be confused in the best possibl
       );
 
       if (retryCount >= maxRetries) {
-        logger.warning('All image generation attempts failed. Using default image URL.');
+        logger.warning('All image generation attempts failed. Using placeholder image.');
         return (
           'https://placehold.co/512x512/4287f5/ffffff?text=' + encodeURIComponent(`${tokenSymbol}`)
         );
@@ -247,15 +198,12 @@ Create something that would make people laugh or be confused in the best possibl
 
 /**
  * Uploads token metadata and image to IPFS using Pinata
- * @param metadata Token metadata
- * @param imageUrl URL of the token image
- * @returns IPFS URL of the metadata
  */
 export async function uploadToIPFS(
   metadata: Omit<TokenMetadata, 'image'>,
   imageUrl: string,
 ): Promise<string> {
-  logger.info('Uploading token metadata and image to IPFS using Pinata...');
+  logger.info('Uploading to IPFS via Pinata...');
 
   try {
     // Create temp directory if it doesn't exist
@@ -264,7 +212,7 @@ export async function uploadToIPFS(
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
-    // Download the image from the URL
+    // Download the image
     const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
     const imageBuffer = Buffer.from(imageResponse.data);
 
@@ -273,11 +221,10 @@ export async function uploadToIPFS(
       type: 'image/png',
     });
 
-    // Upload the image to IPFS via Pinata
+    // Upload the image to IPFS
     const imageUploadResult = await pinata.upload.public.file(imageFile);
-    const ipfsImageUrl = `ipfs://${imageUploadResult.cid}`;
     const httpsImageUrl = `https://${process.env.PINATA_GATEWAY}/ipfs/${imageUploadResult.cid}`;
-    logger.success(`Image uploaded to IPFS: ${ipfsImageUrl}`);
+    logger.success(`Image uploaded to IPFS: ${imageUploadResult.cid}`);
 
     // Create the complete metadata with the IPFS image URL
     const completeMetadata: TokenMetadata = {
@@ -287,11 +234,10 @@ export async function uploadToIPFS(
       createdOn: 'https://pump.fun',
     };
 
-    // Upload the metadata to IPFS via Pinata
+    // Upload the metadata to IPFS
     const metadataUploadResult = await pinata.upload.public.json(completeMetadata);
-    const ipfsMetadataUrl = `ipfs://${metadataUploadResult.cid}`;
     const httpsMetadataUrl = `https://${process.env.PINATA_GATEWAY}/ipfs/${metadataUploadResult.cid}`;
-    logger.success(`Metadata uploaded to IPFS: ${ipfsMetadataUrl}`);
+    logger.success(`Metadata uploaded to IPFS: ${metadataUploadResult.cid}`);
 
     return httpsMetadataUrl;
   } catch (error) {
